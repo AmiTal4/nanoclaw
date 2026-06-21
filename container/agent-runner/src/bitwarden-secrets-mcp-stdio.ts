@@ -3,7 +3,11 @@
  *
  * Exposes secrets from a Bitwarden Secrets Manager project as read-only tools
  * for the container agent. Uses the `bws` CLI under the hood, authenticated via
- * BWS_ACCESS_TOKEN (per-machine-account, injected per-agent-group).
+ * a token file mounted read-only into the container.
+ *
+ * Token resolution order:
+ *   1. BWS_ACCESS_TOKEN_FILE env var → read token from that file path
+ *   2. BWS_ACCESS_TOKEN env var → use directly (fallback)
  *
  * The machine account's project assignment in Bitwarden is the access-control
  * boundary — the agent can only see secrets the machine account has access to.
@@ -12,12 +16,25 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-
-const BWS_ACCESS_TOKEN = process.env.BWS_ACCESS_TOKEN || '';
+import fs from 'fs';
 
 function log(msg: string): void {
   console.error(`[BWS] ${msg}`);
 }
+
+function resolveToken(): string {
+  const tokenFile = process.env.BWS_ACCESS_TOKEN_FILE;
+  if (tokenFile) {
+    try {
+      return fs.readFileSync(tokenFile, 'utf8').trim();
+    } catch {
+      log(`Failed to read token file: ${tokenFile}`);
+    }
+  }
+  return process.env.BWS_ACCESS_TOKEN || '';
+}
+
+const BWS_ACCESS_TOKEN = resolveToken();
 
 interface BwsSecret {
   id: string;
