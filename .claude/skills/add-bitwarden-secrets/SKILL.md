@@ -55,14 +55,14 @@ Add a new layer after the Bun install block (after the `rm -rf /root/.bun` line)
 ```dockerfile
 # ---- Bitwarden Secrets Manager CLI (bws) ------------------------------------
 ARG BWS_VERSION
-RUN curl -fsSL "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-x86_64-unknown-linux-gnu-${BWS_VERSION}.zip" \
+ARG TARGETARCH
+RUN BWS_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64-unknown-linux-gnu" || echo "x86_64-unknown-linux-gnu") && \
+    curl -fsSL "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-${BWS_ARCH}-${BWS_VERSION}.zip" \
         -o /tmp/bws.zip && \
     unzip -o /tmp/bws.zip -d /usr/local/bin && \
     chmod +x /usr/local/bin/bws && \
     rm /tmp/bws.zip
 ```
-
-> **Note:** This installs the x86_64 binary. For arm64 hosts, change `x86_64-unknown-linux-gnu` to `aarch64-unknown-linux-gnu`. If multi-arch is needed, use a build-arg or detect `$(uname -m)` at build time.
 
 ### Validate code changes
 

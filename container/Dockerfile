@@ -72,7 +72,9 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" && \
 
 # ---- Bitwarden Secrets Manager CLI (bws) ------------------------------------
 ARG BWS_VERSION
-RUN curl -fsSL "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-x86_64-unknown-linux-gnu-${BWS_VERSION}.zip" \
+ARG TARGETARCH
+RUN BWS_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64-unknown-linux-gnu" || echo "x86_64-unknown-linux-gnu") && \
+    curl -fsSL "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-${BWS_ARCH}-${BWS_VERSION}.zip" \
         -o /tmp/bws.zip && \
     unzip -o /tmp/bws.zip -d /usr/local/bin && \
     chmod +x /usr/local/bin/bws && \
