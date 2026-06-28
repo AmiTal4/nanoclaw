@@ -1,5 +1,5 @@
 /**
- * Core MCP tools: send_message, send_file, edit_message, add_reaction, send_poll, send_event.
+ * Core MCP tools: send_message, send_file, edit_message, add_reaction, send_poll, send_event, send_contact.
  *
  * All outbound tools resolve destinations via the local destination map
  * (see destinations.ts). Agents reference destinations by name; the map
@@ -391,4 +391,75 @@ export const sendEvent: McpToolDefinition = {
   },
 };
 
-registerTools([sendMessage, sendFile, editMessage, addReaction, sendPoll, sendEvent]);
+function buildVCard(opts: { name: string; phones: string[]; org?: string; email?: string }): string {
+  const clean = (s: string) => s.replace(/[\r\n]+/g, ' ').trim();
+  const name = clean(opts.name);
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0', `N:;${name};;;`, `FN:${name}`];
+  for (const p of opts.phones) {
+    const num = p.trim();
+    const waid = num.replace(/[^0-9]/g, '');
+    lines.push(`TEL;type=CELL;type=VOICE;waid=${waid}:${num}`);
+  }
+  if (opts.org) lines.push(`ORG:${clean(opts.org)}`);
+  if (opts.email) lines.push(`EMAIL;type=INTERNET:${clean(opts.email)}`);
+  lines.push('END:VCARD');
+  return lines.join('\n');
+}
+
+export const sendContact: McpToolDefinition = {
+  tool: {
+    name: 'send_contact',
+    description:
+      'Send a contact card (vCard) to a named destination. On WhatsApp it renders as a tappable contact. If you have only one destination, you can omit `to`.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        to: { type: 'string', description: 'Destination name. Optional if you have only one destination.' },
+        name: { type: 'string', description: "Contact's full display name." },
+        phone: { type: 'string', description: 'Phone number in international format, e.g. +972501234567.' },
+        phones: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional additional phone numbers (international format).',
+        },
+        org: { type: 'string', description: 'Optional organization / company.' },
+        email: { type: 'string', description: 'Optional email address.' },
+      },
+      required: ['name', 'phone'],
+    },
+  },
+  async handler(args) {
+    const name = args.name as string;
+    const phone = args.phone as string;
+    if (!name) return err('name is required');
+    if (!phone) return err('phone is required');
+    const extra = Array.isArray(args.phones) ? (args.phones as unknown[]).map(String) : [];
+    const phones = [phone, ...extra].map((p) => p.trim()).filter(Boolean);
+    if (phones.length === 0) return err('at least one phone number is required');
+
+    const routing = resolveRouting(args.to as string | undefined);
+    if ('error' in routing) return err(routing.error);
+
+    const vcard = buildVCard({
+      name,
+      phones,
+      org: args.org as string | undefined,
+      email: args.email as string | undefined,
+    });
+    const id = generateId();
+    const seq = writeMessageOut({
+      id,
+      in_reply_to: getCurrentInReplyTo(),
+      kind: 'chat',
+      platform_id: routing.platform_id,
+      channel_type: routing.channel_type,
+      thread_id: routing.thread_id,
+      content: JSON.stringify({ operation: 'contact', displayName: name, vcard }),
+    });
+
+    log(`send_contact: #${seq} -> ${routing.resolvedName} (${name})`);
+    return ok(`Contact "${name}" sent to ${routing.resolvedName} (id: ${seq})`);
+  },
+};
+
+registerTools([sendMessage, sendFile, editMessage, addReaction, sendPoll, sendEvent, sendContact]);

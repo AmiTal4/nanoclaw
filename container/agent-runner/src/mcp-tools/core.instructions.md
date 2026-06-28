@@ -22,6 +22,10 @@ Use `mcp__nanoclaw__send_file({ path, text?, filename?, to? })` to deliver a fil
 
 Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific inbound message by its `#N` id — pass `messageId` as an integer (e.g. `22`, not `"22"`). Good for lightweight acknowledgment (`eyes` = seen, `white_check_mark` = done) when a full reply would be noise. `emoji` is the shortcode name (e.g. `thumbs_up`, `heart`), not the raw character.
 
+### Sending contacts (`send_contact`)
+
+Use `mcp__nanoclaw__send_contact({ name, phone, phones?, org?, email?, to? })` to share a contact card. `name` and `phone` are required; `phones` adds extra numbers; `org`/`email` are optional. On WhatsApp it renders as a tappable contact the recipient can save. Incoming contact cards arrive as a `📇 Contact card` summary plus the raw `.vcf` file in `/workspace/inbox/<messageId>/`.
+
 ### Sending polls (`send_poll`)
 
 Use `mcp__nanoclaw__send_poll({ name, options, allowMultipleAnswers?, to? })` to send a poll. `name` is the question, `options` is an array of 2-12 short strings. Set `allowMultipleAnswers: true` to let people pick more than one. On WhatsApp this renders as a native poll recipients tap to vote. Use it when you want a quick group decision instead of free-text replies. When people vote, you'll receive a `ð Poll update` message with the running tally per option (DM polls wake you on each vote; group poll votes are recorded but don't wake you).

@@ -53,6 +53,27 @@ import type { ChannelAdapter, ChannelSetup, ConversationInfo, InboundMessage, Ou
 
 const baileysLogger = pino({ level: 'silent' });
 
+/** Pull the FN (formatted name) line out of a vCard. */
+function parseVCardName(vcard: string): string | undefined {
+  const m = vcard.match(/^FN:(.+)$/m);
+  return m ? m[1].trim() : undefined;
+}
+
+/** Pull all TEL numbers out of a vCard (value after the last colon). */
+function parseVCardTels(vcard: string): string[] {
+  const tels: string[] = [];
+  for (const line of vcard.split(/\r?\n/)) {
+    if (/^TEL/i.test(line)) {
+      const idx = line.lastIndexOf(':');
+      if (idx >= 0) {
+        const t = line.slice(idx + 1).trim();
+        if (t) tels.push(t);
+      }
+    }
+  }
+  return tels;
+}
+
 /**
  * Fetch the latest WhatsApp Web version. Baileys' built-in
  * fetchLatestWaWebVersion scrapes sw.js which is aggressively
@@ -876,6 +897,37 @@ registerChannelAdapter('whatsapp', {
             // Download media attachments (images, video, audio, documents)
             const attachments = await downloadInboundMedia(msg, normalized);
 
+            // Inbound contact cards (contactMessage / contactsArrayMessage):
+            // surface a summary line and stage each raw .vcf into the inbox so
+            // the agent can read, save, or forward it.
+            const contactCards: Array<{ displayName?: string | null; vcard?: string | null }> = [];
+            if (normalized.contactMessage) contactCards.push(normalized.contactMessage);
+            if (normalized.contactsArrayMessage?.contacts) {
+              contactCards.push(...normalized.contactsArrayMessage.contacts);
+            }
+            if (contactCards.length > 0) {
+              const summaries: string[] = [];
+              contactCards.forEach((c, i) => {
+                const vcard = c.vcard || '';
+                const dn = c.displayName || (vcard && parseVCardName(vcard)) || 'Contact';
+                const tels = vcard ? parseVCardTels(vcard) : [];
+                summaries.push(`${dn}${tels.length > 0 ? ` — ${tels.join(', ')}` : ''}`);
+                if (vcard) {
+                  const safe = dn.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'contact';
+                  attachments.push({
+                    type: 'contact',
+                    name: `${safe}-${i + 1}.vcf`,
+                    mimetype: 'text/vcard',
+                    size: Buffer.byteLength(vcard),
+                    data: Buffer.from(vcard).toString('base64'),
+                  });
+                }
+              });
+              const label = contactCards.length === 1 ? 'Contact card' : `${contactCards.length} contact cards`;
+              const summaryText = `📇 ${label}: ${summaries.join('; ')}`;
+              content = content ? `${content}\n${summaryText}` : summaryText;
+            }
+
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
 
@@ -1068,6 +1120,27 @@ registerChannelAdapter('whatsapp', {
             return sent?.key?.id ?? undefined;
           } catch (err) {
             log.error('Failed to send event', { platformId, err });
+            return;
+          }
+        }
+
+        // Contact card -> native WhatsApp contact (vCard)
+        if (content.operation === 'contact' && content.vcard) {
+          try {
+            await ensureTcToken(platformId);
+            const displayName = (content.displayName as string) || 'Contact';
+            const sent = await sock.sendMessage(platformId, {
+              contacts: {
+                displayName,
+                contacts: [{ displayName, vcard: content.vcard as string }],
+              },
+            });
+            if (sent?.key?.id && sent.message) {
+              sentMessageCache.set(sent.key.id, sent.message);
+            }
+            return sent?.key?.id ?? undefined;
+          } catch (err) {
+            log.error('Failed to send contact', { platformId, err });
             return;
           }
         }
