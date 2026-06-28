@@ -44,7 +44,7 @@ import type { EventMessageOptions, GroupMetadata, WAMessageKey, WAMessage, WASoc
 import { storeTcTokensFromIqResult } from '@whiskeysockets/baileys/lib/Utils/tc-token-utils.js';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, DATA_DIR } from '../config.js';
+import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -434,19 +434,21 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /** Download inbound media as base64. The host stages it into the session
+     *  inbox (/workspace/inbox/<messageId>/) via extractAttachmentFiles — the
+     *  same path every other channel uses — so the agent can find the files. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
-    ): Promise<Array<{ type: string; name: string; localPath: string }>> {
+    ): Promise<Array<{ type: string; name: string; mimetype?: string; size: number; data: string }>> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
         { key: 'imageMessage', type: 'image', ext: '.jpg' },
         { key: 'videoMessage', type: 'video', ext: '.mp4' },
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: Array<{ type: string; name: string; mimetype?: string; size: number; data: string }> = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
         try {
@@ -463,12 +465,14 @@ registerChannelAdapter('whatsapp', {
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
+          results.push({
+            type,
+            name: filename,
+            mimetype: normalized[key].mimetype || undefined,
+            size: buffer.length,
+            data: buffer.toString('base64'),
+          });
+          log.info('Media downloaded', { type, filename, size: buffer.length });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
         }
@@ -746,13 +750,55 @@ registerChannelAdapter('whatsapp', {
                   continue;
                 }
                 const meId = jidNormalizedUser(sock.user?.id || '');
-                const voterJid = getKeyAuthor(msg.key, meId);
-                const voteMsg = decryptPollVote(pollUpdate.vote, {
-                  pollEncKey,
-                  pollCreatorJid: getKeyAuthor(creationKey, meId),
-                  pollMsgId: pollId,
-                  voterJid,
-                });
+                const botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : undefined;
+                // The poll-vote key/AAD derivation is sensitive to the exact JID
+                // form (phone vs LID) the voter's client used. Baileys' own
+                // (disabled) code assumes one form and breaks under LID
+                // addressing, so try the candidate forms until one authenticates.
+                const rawVoter = msg.key.participant || msg.key.remoteJid || '';
+                const voterCandidates = [
+                  ...new Set(
+                    [
+                      getKeyAuthor(msg.key, meId),
+                      rawVoter,
+                      msg.key.participantAlt,
+                      msg.key.remoteJidAlt,
+                      await translateJid(rawVoter, msg.key.participantAlt || msg.key.remoteJidAlt || undefined),
+                    ].filter((j): j is string => !!j),
+                  ),
+                ];
+                const creatorCandidates = [
+                  ...new Set(
+                    [getKeyAuthor(creationKey, meId), meId, sock.user?.id, botLid].filter((j): j is string => !!j),
+                  ),
+                ];
+                let voteMsg: ReturnType<typeof decryptPollVote> | undefined;
+                let voterJid = getKeyAuthor(msg.key, meId);
+                outer: for (const creator of creatorCandidates) {
+                  for (const voter of voterCandidates) {
+                    try {
+                      voteMsg = decryptPollVote(pollUpdate.vote, {
+                        pollEncKey,
+                        pollCreatorJid: creator,
+                        pollMsgId: pollId,
+                        voterJid: voter,
+                      });
+                      voterJid = voter;
+                      log.info('Poll vote decrypted', { pollId, creator, voter });
+                      break outer;
+                    } catch {
+                      /* wrong JID form — try the next candidate */
+                    }
+                  }
+                }
+                if (!voteMsg) {
+                  log.warn('Poll vote: no JID combination authenticated', {
+                    pollId,
+                    voterCandidates,
+                    creatorCandidates,
+                  });
+                  continue;
+                }
                 let voters = pollVotes.get(pollId);
                 if (!voters) {
                   voters = new Map();
