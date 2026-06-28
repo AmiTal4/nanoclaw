@@ -32,6 +32,7 @@ import {
   DisconnectReason,
   fetchLatestWaWebVersion,
   downloadMediaMessage,
+  getAggregateVotesInPollMessage,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   useMultiFileAuthState,
@@ -816,6 +817,77 @@ registerChannelAdapter('whatsapp', {
               err,
               remoteJid: msg.key?.remoteJid,
             });
+          }
+        }
+      });
+
+      // Poll votes arrive as updates to the original poll message (not as new
+      // messages). Baileys decrypts them using getMessage() (our
+      // sentMessageCache); getAggregateVotesInPollMessage turns the raw
+      // updates into a per-option tally, which we forward to the agent so it
+      // can act on the result. DMs wake the agent (isMention); group poll
+      // updates are recorded but don't wake it, to avoid per-tap spam. Polls
+      // sent before the last restart aren't in the in-memory cache and are
+      // skipped.
+      sock.ev.on('messages.update', async (updates) => {
+        for (const { key, update } of updates) {
+          try {
+            if (!update.pollUpdates || update.pollUpdates.length === 0) continue;
+            const pollId = key.id || '';
+            const pollMessage = sentMessageCache.get(pollId);
+            if (!pollMessage) {
+              log.debug('Poll vote for unknown/evicted poll — skipping', { pollId });
+              continue;
+            }
+            const aggregated = getAggregateVotesInPollMessage({
+              message: pollMessage,
+              pollUpdates: update.pollUpdates,
+            });
+            const pollName =
+              pollMessage.pollCreationMessage?.name ||
+              pollMessage.pollCreationMessageV2?.name ||
+              pollMessage.pollCreationMessageV3?.name ||
+              'Poll';
+
+            const rawJid = key.remoteJid;
+            if (!rawJid || rawJid === 'status@broadcast') continue;
+            const chatJid = await translateJid(rawJid, key.remoteJidAlt ?? undefined);
+            const isGroup = chatJid.endsWith('@g.us');
+
+            const lines = await Promise.all(
+              aggregated.map(async (opt) => {
+                const voters = await Promise.all(
+                  (opt.voters || []).map(async (v) => {
+                    const phone = v.endsWith('@lid') ? await translateJid(v) : v;
+                    return phone.split('@')[0];
+                  }),
+                );
+                const count = voters.length;
+                return `• ${opt.name} — ${count} vote${count === 1 ? '' : 's'}${count > 0 ? ` (${voters.join(', ')})` : ''}`;
+              }),
+            );
+            const text = `📊 Poll update — "${pollName}":\n${lines.join('\n')}`;
+
+            const inbound: InboundMessage = {
+              id: `wa-pollvote-${pollId}-${Date.now()}`,
+              kind: 'chat',
+              isMention: !isGroup,
+              isGroup,
+              content: {
+                text,
+                sender: chatJid,
+                senderName: 'WhatsApp Poll',
+                fromMe: false,
+                isBotMessage: false,
+                isGroup,
+                chatJid,
+              },
+              timestamp: new Date().toISOString(),
+            };
+            setupConfig.onInbound(chatJid, null, inbound);
+            log.info('Poll vote forwarded', { pollId, options: aggregated.length });
+          } catch (err) {
+            log.error('Error processing poll vote update', { err, pollId: key?.id });
           }
         }
       });

@@ -24,7 +24,7 @@ Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific i
 
 ### Sending polls (`send_poll`)
 
-Use `mcp__nanoclaw__send_poll({ name, options, allowMultipleAnswers?, to? })` to send a poll. `name` is the question, `options` is an array of 2-12 short strings. Set `allowMultipleAnswers: true` to let people pick more than one. On WhatsApp this renders as a native poll recipients tap to vote. Use it when you want a quick group decision instead of free-text replies.
+Use `mcp__nanoclaw__send_poll({ name, options, allowMultipleAnswers?, to? })` to send a poll. `name` is the question, `options` is an array of 2-12 short strings. Set `allowMultipleAnswers: true` to let people pick more than one. On WhatsApp this renders as a native poll recipients tap to vote. Use it when you want a quick group decision instead of free-text replies. When people vote, you'll receive a `ð Poll update` message with the running tally per option (DM polls wake you on each vote; group poll votes are recorded but don't wake you).
 
 ### Sending events (`send_event`)
 
