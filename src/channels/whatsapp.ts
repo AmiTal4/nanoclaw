@@ -32,7 +32,9 @@ import {
   DisconnectReason,
   fetchLatestWaWebVersion,
   downloadMediaMessage,
+  decryptPollVote,
   getAggregateVotesInPollMessage,
+  getKeyAuthor,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   useMultiFileAuthState,
@@ -299,6 +301,11 @@ registerChannelAdapter('whatsapp', {
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
+
+    // Poll vote accumulation: pollMsgId -> (voterJid -> latest decrypted update).
+    // WhatsApp sends each voter's full current selection per change, so we keep
+    // the latest per voter and re-aggregate to produce a running tally.
+    const pollVotes = new Map<string, Map<string, any>>();
 
     // Group metadata cache with TTL
     const groupMetadataCache = new Map<string, { metadata: GroupMetadata; expiresAt: number }>();
@@ -717,6 +724,91 @@ registerChannelAdapter('whatsapp', {
             // Translate LID → phone JID using v7's alt JID from extractAddressingContext
             const chatJid = await translateJid(rawJid, msg.key.remoteJidAlt);
 
+            // Poll votes arrive as an encrypted pollUpdateMessage. Baileys 7's
+            // auto-decrypt path is commented out upstream, so we decrypt manually
+            // (replicating its logic), accumulate the latest selection per voter,
+            // and forward a running tally to the agent. DM polls wake the agent;
+            // group poll votes are recorded without waking it. Polls sent before
+            // the last restart aren't in the in-memory cache and can't be decoded.
+            const pollUpdate = normalized.pollUpdateMessage || msg.message.pollUpdateMessage;
+            if (pollUpdate?.pollCreationMessageKey?.id && pollUpdate.vote) {
+              const creationKey = pollUpdate.pollCreationMessageKey;
+              const pollId = creationKey.id!;
+              const pollMessage = sentMessageCache.get(pollId);
+              if (!pollMessage) {
+                log.info('Poll vote for unknown/evicted poll — skipping', { pollId });
+                continue;
+              }
+              try {
+                const pollEncKey = pollMessage.messageContextInfo?.messageSecret;
+                if (!pollEncKey) {
+                  log.warn('Poll has no messageSecret — cannot decrypt votes', { pollId });
+                  continue;
+                }
+                const meId = jidNormalizedUser(sock.user?.id || '');
+                const voterJid = getKeyAuthor(msg.key, meId);
+                const voteMsg = decryptPollVote(pollUpdate.vote, {
+                  pollEncKey,
+                  pollCreatorJid: getKeyAuthor(creationKey, meId),
+                  pollMsgId: pollId,
+                  voterJid,
+                });
+                let voters = pollVotes.get(pollId);
+                if (!voters) {
+                  voters = new Map();
+                  pollVotes.set(pollId, voters);
+                }
+                const tsRaw = pollUpdate.senderTimestampMs as unknown;
+                const senderTimestampMs = tsRaw ? Number((tsRaw as { toString(): string }).toString()) : Date.now();
+                voters.set(voterJid, { pollUpdateMessageKey: msg.key, vote: voteMsg, senderTimestampMs });
+
+                const aggregated = getAggregateVotesInPollMessage({
+                  message: pollMessage,
+                  pollUpdates: Array.from(voters.values()),
+                });
+                const pollName =
+                  pollMessage.pollCreationMessage?.name ||
+                  pollMessage.pollCreationMessageV2?.name ||
+                  pollMessage.pollCreationMessageV3?.name ||
+                  'Poll';
+                const isPollGroup = chatJid.endsWith('@g.us');
+                const lines = await Promise.all(
+                  aggregated.map(async (opt) => {
+                    const names = await Promise.all(
+                      (opt.voters || []).map(async (v) => {
+                        const phone = v.endsWith('@lid') ? await translateJid(v) : v;
+                        return phone.split('@')[0];
+                      }),
+                    );
+                    const count = names.length;
+                    return `• ${opt.name} — ${count} vote${count === 1 ? '' : 's'}${count > 0 ? ` (${names.join(', ')})` : ''}`;
+                  }),
+                );
+                const text = `📊 Poll update — "${pollName}":\n${lines.join('\n')}`;
+                const pollInbound: InboundMessage = {
+                  id: `wa-pollvote-${pollId}-${Date.now()}`,
+                  kind: 'chat',
+                  isMention: !isPollGroup,
+                  isGroup: isPollGroup,
+                  content: {
+                    text,
+                    sender: chatJid,
+                    senderName: 'WhatsApp Poll',
+                    fromMe: false,
+                    isBotMessage: false,
+                    isGroup: isPollGroup,
+                    chatJid,
+                  },
+                  timestamp: new Date().toISOString(),
+                };
+                setupConfig.onInbound(chatJid, null, pollInbound);
+                log.info('Poll vote forwarded', { pollId, options: aggregated.length });
+              } catch (err) {
+                log.warn('Failed to decrypt/forward poll vote', { pollId, err });
+              }
+              continue;
+            }
+
             const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
             const isGroup = chatJid.endsWith('@g.us');
 
@@ -817,77 +909,6 @@ registerChannelAdapter('whatsapp', {
               err,
               remoteJid: msg.key?.remoteJid,
             });
-          }
-        }
-      });
-
-      // Poll votes arrive as updates to the original poll message (not as new
-      // messages). Baileys decrypts them using getMessage() (our
-      // sentMessageCache); getAggregateVotesInPollMessage turns the raw
-      // updates into a per-option tally, which we forward to the agent so it
-      // can act on the result. DMs wake the agent (isMention); group poll
-      // updates are recorded but don't wake it, to avoid per-tap spam. Polls
-      // sent before the last restart aren't in the in-memory cache and are
-      // skipped.
-      sock.ev.on('messages.update', async (updates) => {
-        for (const { key, update } of updates) {
-          try {
-            if (!update.pollUpdates || update.pollUpdates.length === 0) continue;
-            const pollId = key.id || '';
-            const pollMessage = sentMessageCache.get(pollId);
-            if (!pollMessage) {
-              log.debug('Poll vote for unknown/evicted poll — skipping', { pollId });
-              continue;
-            }
-            const aggregated = getAggregateVotesInPollMessage({
-              message: pollMessage,
-              pollUpdates: update.pollUpdates,
-            });
-            const pollName =
-              pollMessage.pollCreationMessage?.name ||
-              pollMessage.pollCreationMessageV2?.name ||
-              pollMessage.pollCreationMessageV3?.name ||
-              'Poll';
-
-            const rawJid = key.remoteJid;
-            if (!rawJid || rawJid === 'status@broadcast') continue;
-            const chatJid = await translateJid(rawJid, key.remoteJidAlt ?? undefined);
-            const isGroup = chatJid.endsWith('@g.us');
-
-            const lines = await Promise.all(
-              aggregated.map(async (opt) => {
-                const voters = await Promise.all(
-                  (opt.voters || []).map(async (v) => {
-                    const phone = v.endsWith('@lid') ? await translateJid(v) : v;
-                    return phone.split('@')[0];
-                  }),
-                );
-                const count = voters.length;
-                return `• ${opt.name} — ${count} vote${count === 1 ? '' : 's'}${count > 0 ? ` (${voters.join(', ')})` : ''}`;
-              }),
-            );
-            const text = `📊 Poll update — "${pollName}":\n${lines.join('\n')}`;
-
-            const inbound: InboundMessage = {
-              id: `wa-pollvote-${pollId}-${Date.now()}`,
-              kind: 'chat',
-              isMention: !isGroup,
-              isGroup,
-              content: {
-                text,
-                sender: chatJid,
-                senderName: 'WhatsApp Poll',
-                fromMe: false,
-                isBotMessage: false,
-                isGroup,
-                chatJid,
-              },
-              timestamp: new Date().toISOString(),
-            };
-            setupConfig.onInbound(chatJid, null, inbound);
-            log.info('Poll vote forwarded', { pollId, options: aggregated.length });
-          } catch (err) {
-            log.error('Error processing poll vote update', { err, pollId: key?.id });
           }
         }
       });
