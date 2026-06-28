@@ -24,6 +24,13 @@ registerResource({
       required: true,
     },
     {
+      name: 'instance',
+      type: 'string',
+      description:
+        'Adapter instance name. Defaults to channel_type (the default instance). Only needed for multi-instance setups.',
+      computedDefault: (values) => values.channel_type as string,
+    },
+    {
       name: 'name',
       type: 'string',
       description: 'Display name. Often auto-populated by the channel adapter.',

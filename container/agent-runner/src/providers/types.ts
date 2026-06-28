@@ -79,6 +79,8 @@ export interface ProviderOptions {
    * through to the underlying SDK. If omitted, the SDK default is used.
    */
   effort?: string;
+  disabledTools?: string[];
+  blockLocalWebFetch?: boolean;
 }
 
 export interface QueryInput {

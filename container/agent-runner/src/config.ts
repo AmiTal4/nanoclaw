@@ -18,6 +18,8 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  disabledTools?: string[];
+  blockLocalWebFetch?: boolean;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,6 +49,8 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    disabledTools: Array.isArray(raw.disabledTools) ? (raw.disabledTools as string[]) : undefined,
+    blockLocalWebFetch: raw.blockLocalWebFetch === true ? true : undefined,
   };
 
   return _config;

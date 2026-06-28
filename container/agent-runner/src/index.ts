@@ -94,6 +94,8 @@ async function main(): Promise<void> {
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     model: config.model,
     effort: config.effort,
+    disabledTools: config.disabledTools,
+    blockLocalWebFetch: config.blockLocalWebFetch,
   });
 
   // Providers that lack native memory opt in via `usesMemoryScaffold`; for them

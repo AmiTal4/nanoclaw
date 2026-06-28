@@ -1,5 +1,5 @@
 /**
- * Core MCP tools: send_message, send_file, edit_message, add_reaction.
+ * Core MCP tools: send_message, send_file, edit_message, add_reaction, send_poll, send_event.
  *
  * All outbound tools resolve destinations via the local destination map
  * (see destinations.ts). Agents reference destinations by name; the map
@@ -260,4 +260,135 @@ export const addReaction: McpToolDefinition = {
   },
 };
 
-registerTools([sendMessage, sendFile, editMessage, addReaction]);
+export const sendPoll: McpToolDefinition = {
+  tool: {
+    name: 'send_poll',
+    description:
+      'Send a poll to a named destination (renders as a native poll on WhatsApp). Recipients tap options to vote. If you have only one destination, you can omit `to`.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        to: { type: 'string', description: 'Destination name. Optional if you have only one destination.' },
+        name: { type: 'string', description: 'The poll question shown at the top of the poll.' },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Answer options (2-12 short strings).',
+        },
+        allowMultipleAnswers: {
+          type: 'boolean',
+          description: 'Allow voters to pick more than one option (default false = single choice).',
+        },
+      },
+      required: ['name', 'options'],
+    },
+  },
+  async handler(args) {
+    const name = args.name as string;
+    const rawOptions = args.options as unknown;
+    if (!name) return err('name is required');
+    if (!Array.isArray(rawOptions) || rawOptions.length < 2) {
+      return err('options must be an array of at least 2 strings');
+    }
+    const values = rawOptions.map((o) => String(o).trim()).filter(Boolean);
+    if (values.length < 2) return err('at least 2 non-empty options are required');
+    const allowMultiple = args.allowMultipleAnswers === true;
+
+    const routing = resolveRouting(args.to as string | undefined);
+    if ('error' in routing) return err(routing.error);
+
+    const id = generateId();
+    const seq = writeMessageOut({
+      id,
+      in_reply_to: getCurrentInReplyTo(),
+      kind: 'chat',
+      platform_id: routing.platform_id,
+      channel_type: routing.channel_type,
+      thread_id: routing.thread_id,
+      content: JSON.stringify({
+        operation: 'poll',
+        name,
+        values,
+        selectableCount: allowMultiple ? values.length : 1,
+      }),
+    });
+
+    log(`send_poll: #${seq} -> ${routing.resolvedName} (${values.length} options)`);
+    return ok(`Poll sent to ${routing.resolvedName} (id: ${seq})`);
+  },
+};
+
+export const sendEvent: McpToolDefinition = {
+  tool: {
+    name: 'send_event',
+    description:
+      'Send an event invite to a named destination (renders as a native event card on WhatsApp). If you have only one destination, you can omit `to`.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        to: { type: 'string', description: 'Destination name. Optional if you have only one destination.' },
+        name: { type: 'string', description: 'Event title.' },
+        startTime: {
+          type: 'string',
+          description: 'Event start time as an ISO 8601 timestamp (e.g. 2026-07-01T18:00:00Z).',
+        },
+        endTime: { type: 'string', description: 'Optional end time as an ISO 8601 timestamp.' },
+        description: { type: 'string', description: 'Optional event description.' },
+        location: { type: 'string', description: 'Optional location name or address.' },
+        call: {
+          type: 'string',
+          enum: ['audio', 'video'],
+          description: 'Optionally attach a WhatsApp call link of this type.',
+        },
+      },
+      required: ['name', 'startTime'],
+    },
+  },
+  async handler(args) {
+    const name = args.name as string;
+    const startTime = args.startTime as string;
+    if (!name) return err('name is required');
+    if (!startTime) return err('startTime is required (ISO 8601 timestamp)');
+    if (Number.isNaN(new Date(startTime).getTime())) {
+      return err('startTime is not a valid ISO 8601 timestamp');
+    }
+    let endTime: string | undefined;
+    if (args.endTime) {
+      endTime = args.endTime as string;
+      if (Number.isNaN(new Date(endTime).getTime())) {
+        return err('endTime is not a valid ISO 8601 timestamp');
+      }
+    }
+    const call = args.call as string | undefined;
+    if (call && call !== 'audio' && call !== 'video') {
+      return err('call must be "audio" or "video"');
+    }
+
+    const routing = resolveRouting(args.to as string | undefined);
+    if ('error' in routing) return err(routing.error);
+
+    const id = generateId();
+    const seq = writeMessageOut({
+      id,
+      in_reply_to: getCurrentInReplyTo(),
+      kind: 'chat',
+      platform_id: routing.platform_id,
+      channel_type: routing.channel_type,
+      thread_id: routing.thread_id,
+      content: JSON.stringify({
+        operation: 'event',
+        name,
+        startTime,
+        ...(endTime && { endTime }),
+        ...(args.description && { description: String(args.description) }),
+        ...(args.location && { location: String(args.location) }),
+        ...(call && { call }),
+      }),
+    });
+
+    log(`send_event: #${seq} -> ${routing.resolvedName}`);
+    return ok(`Event sent to ${routing.resolvedName} (id: ${seq})`);
+  },
+};
+
+registerTools([sendMessage, sendFile, editMessage, addReaction, sendPoll, sendEvent]);

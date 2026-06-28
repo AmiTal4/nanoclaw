@@ -14,6 +14,7 @@ import { migration013 } from './013-approval-render-metadata.js';
 import { migration014 } from './014-container-configs.js';
 import { migration015 } from './015-cli-scope.js';
 import { migration016 } from './016-messaging-group-instance.js';
+import { migration019 } from './019-container-config-block-local-web.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 import { migration018 } from './018-approvals-approver-user-id.js';
@@ -40,7 +41,7 @@ export const migrations: Migration[] = [
   moduleAgentToAgentDestinations,
   migration017,
   moduleApprovalsTitleOptions,
-  migration018,
+  migration019,
   migration008,
   migration009,
   migration010,
@@ -50,6 +51,7 @@ export const migrations: Migration[] = [
   migration014,
   migration015,
   migration016,
+  migration018,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a

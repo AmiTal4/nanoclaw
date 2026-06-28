@@ -1,0 +1,33 @@
+{
+  "agent_group_id": "621a9ed3-0de5-4606-a3a0-e896625ce2e1",
+  "agent_group_name": "public",
+  "cli_scope": "group",
+  "disabled_tools": [
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Task",
+    "TaskOutput",
+    "TaskStop",
+    "TodoWrite",
+    "ToolSearch",
+    "NotebookEdit"
+  ],
+  "block_local_web_fetch": true,
+  "tools_remaining": [
+    "WebSearch",
+    "WebFetch",
+    "TeamCreate",
+    "TeamDelete",
+    "SendMessage",
+    "Skill"
+  ],
+  "notes": {
+    "disabled_tools": "Removes these tools from the Claude SDK allowedTools list — the model never sees them.",
+    "block_local_web_fetch": "Pre-tool-use hook blocks WebFetch calls whose URL hostname resolves to localhost, 127.x.x.x, ::1, host.docker.internal, 0.0.0.0, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, or 169.254.x.x.",
+    "cli_scope": "'group' means the agent can only query/modify its own agent group via ncl, cannot escalate to global, cannot change its own cli_scope."
+  }
+}

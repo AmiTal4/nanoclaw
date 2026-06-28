@@ -3,6 +3,8 @@ onlyBuiltDependencies:
   - esbuild
   - protobufjs
   - sharp
+patchedDependencies:
+  whatsapp-rust-bridge@0.5.4: patches/whatsapp-rust-bridge@0.5.4.patch
 
 pnpm:
   minimumReleaseAge: 4320

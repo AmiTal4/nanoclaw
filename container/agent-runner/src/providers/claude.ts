@@ -68,6 +68,18 @@ function mcpAllowPattern(serverName: string): string {
   return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
 }
 
+const LOCAL_HOSTNAME_RE = /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal)$/i;
+const PRIVATE_IP_RE = /^(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|169\.254\.\d+\.\d+)$/;
+
+function isLocalUrl(urlStr: string): boolean {
+  try {
+    const hostname = new URL(urlStr).hostname;
+    return LOCAL_HOSTNAME_RE.test(hostname) || PRIVATE_IP_RE.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
 interface SDKUserMessage {
   type: 'user';
   message: { role: 'user'; content: string };
@@ -337,6 +349,8 @@ export class ClaudeProvider implements AgentProvider {
   private additionalDirectories?: string[];
   private model?: string;
   private effort?: string;
+  private disabledTools: Set<string>;
+  private blockLocalWebFetch: boolean;
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
@@ -344,6 +358,8 @@ export class ClaudeProvider implements AgentProvider {
     this.additionalDirectories = options.additionalDirectories;
     this.model = options.model;
     this.effort = options.effort;
+    this.disabledTools = new Set(options.disabledTools ?? []);
+    this.blockLocalWebFetch = options.blockLocalWebFetch ?? false;
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -396,6 +412,28 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    const filteredAllowlist = this.disabledTools.size > 0
+      ? TOOL_ALLOWLIST.filter(t => !this.disabledTools.has(t))
+      : TOOL_ALLOWLIST;
+
+    const blockLocalFetch = this.blockLocalWebFetch;
+    const localFetchHook: HookCallback = async (hookInput) => {
+      const hi = hookInput as { tool_name?: string; tool_input?: Record<string, unknown> };
+      if (hi.tool_name === 'WebFetch') {
+        const url = hi.tool_input?.url;
+        if (typeof url === 'string' && isLocalUrl(url)) {
+          return {
+            decision: 'block',
+            stopReason: 'WebFetch to local/private network addresses is not allowed in this environment.',
+          } as unknown as ReturnType<HookCallback>;
+        }
+      }
+      return { continue: true };
+    };
+
+    const preToolUseHooks = [preToolUseHook];
+    if (blockLocalFetch) preToolUseHooks.unshift(localFetchHook);
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
@@ -405,7 +443,7 @@ export class ClaudeProvider implements AgentProvider {
         pathToClaudeCodeExecutable: '/pnpm/claude',
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
-          ...TOOL_ALLOWLIST,
+          ...filteredAllowlist,
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
@@ -418,7 +456,7 @@ export class ClaudeProvider implements AgentProvider {
         settingSources: ['project', 'user', 'local'],
         mcpServers: this.mcpServers,
         hooks: {
-          PreToolUse: [{ hooks: [preToolUseHook] }],
+          PreToolUse: [{ hooks: preToolUseHooks }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],

@@ -43,6 +43,8 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  disabledTools?: string[];
+  blockLocalWebFetch?: boolean;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -63,6 +65,8 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    disabledTools: (() => { const parsed = JSON.parse(row.disabled_tools) as string[]; return parsed.length > 0 ? parsed : undefined; })(),
+    blockLocalWebFetch: row.block_local_web_fetch === 1 ? true : undefined,
   };
 }
 

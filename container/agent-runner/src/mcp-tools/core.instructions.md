@@ -22,6 +22,14 @@ Use `mcp__nanoclaw__send_file({ path, text?, filename?, to? })` to deliver a fil
 
 Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific inbound message by its `#N` id — pass `messageId` as an integer (e.g. `22`, not `"22"`). Good for lightweight acknowledgment (`eyes` = seen, `white_check_mark` = done) when a full reply would be noise. `emoji` is the shortcode name (e.g. `thumbs_up`, `heart`), not the raw character.
 
+### Sending polls (`send_poll`)
+
+Use `mcp__nanoclaw__send_poll({ name, options, allowMultipleAnswers?, to? })` to send a poll. `name` is the question, `options` is an array of 2-12 short strings. Set `allowMultipleAnswers: true` to let people pick more than one. On WhatsApp this renders as a native poll recipients tap to vote. Use it when you want a quick group decision instead of free-text replies.
+
+### Sending events (`send_event`)
+
+Use `mcp__nanoclaw__send_event({ name, startTime, endTime?, description?, location?, call?, to? })` to send an event invite. `startTime`/`endTime` are ISO 8601 timestamps (e.g. `2026-07-01T18:00:00Z`); `location` is a free-text place; `call` can be `audio` or `video` to attach a WhatsApp call link. On WhatsApp this renders as a native event card recipients can add to their calendar.
+
 ### Internal thoughts
 
 Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent.
