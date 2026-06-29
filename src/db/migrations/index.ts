@@ -41,7 +41,6 @@ export const migrations: Migration[] = [
   moduleAgentToAgentDestinations,
   migration017,
   moduleApprovalsTitleOptions,
-  migration019,
   migration008,
   migration009,
   migration010,
@@ -52,6 +51,7 @@ export const migrations: Migration[] = [
   migration015,
   migration016,
   migration018,
+  migration019,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a
