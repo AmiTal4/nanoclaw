@@ -16,6 +16,7 @@
  * - Otherwise → QR code (printed to log)
  * Subsequent restarts reuse the saved session automatically.
  */
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 // Named import (not default) — pino's .d.ts under NodeNext resolution
@@ -340,6 +341,11 @@ registerChannelAdapter('whatsapp', {
         options: NormalizedOption[];
       }
     >();
+
+    // Polls that ARE an ask_question / approval card: pollMsgId → question meta.
+    // A vote on one of these is mapped back to its option value and fired via
+    // onAction (the approval pipeline) — NOT forwarded to the agent as a tally.
+    const questionPolls = new Map<string, { questionId: string; options: NormalizedOption[]; chatJid: string }>();
 
     // Group sync tracking
     let lastGroupSync = 0;
@@ -820,6 +826,35 @@ registerChannelAdapter('whatsapp', {
                   });
                   continue;
                 }
+
+                // Is this poll an ask_question / approval card? If so, map the
+                // vote to its option value and answer via onAction — and never
+                // forward it to the agent as a "📊 Poll update" tally.
+                const question = questionPolls.get(pollId);
+                if (question) {
+                  // WhatsApp identifies a selected option by SHA-256 of its label.
+                  const selected = new Set((voteMsg.selectedOptions || []).map((b) => Buffer.from(b).toString('hex')));
+                  const matched = question.options.find((o) =>
+                    selected.has(createHash('sha256').update(o.label).digest('hex')),
+                  );
+                  if (matched) {
+                    const voterName = msg.pushName || voterJid.split('@')[0];
+                    const answerer = voterJid.endsWith('@lid') ? await translateJid(voterJid) : voterJid;
+                    setupConfig.onAction(question.questionId, matched.value, answerer);
+                    questionPolls.delete(pollId);
+                    pollVotes.delete(pollId);
+                    await sendRawMessage(chatJid, `${matched.selectedLabel} by ${voterName}`);
+                    log.info('Question answered via poll', {
+                      pollId,
+                      questionId: question.questionId,
+                      value: matched.value,
+                      voterName,
+                    });
+                  }
+                  // Deselect (empty selection) leaves the card open for a real vote.
+                  continue;
+                }
+
                 let voters = pollVotes.get(pollId);
                 if (!voters) {
                   voters = new Map();
@@ -1039,7 +1074,9 @@ registerChannelAdapter('whatsapp', {
       ): Promise<string | undefined> {
         const content = message.content as Record<string, unknown>;
 
-        // Ask question → text with slash command replies
+        // Ask question / approval → native single-select WhatsApp poll.
+        // The approver taps an option; the vote is mapped back to its value and
+        // answered via onAction (see the pollUpdate handler) — no typed /approve.
         if (content.type === 'ask_question' && content.questionId && content.options) {
           const questionId = content.questionId as string;
           const title = content.title as string;
@@ -1050,17 +1087,46 @@ registerChannelAdapter('whatsapp', {
           }
           const options: NormalizedOption[] = normalizeOptions(content.options as never);
 
-          const optionLines = options.map((o) => `  ${optionToCommand(o.label)}`).join('\n');
-          const text = `*${title}*\n\n${question}\n\nReply with:\n${optionLines}`;
-          const msgId = await sendRawMessage(platformId, text);
-          if (msgId) {
-            pendingQuestions.set(platformId, { questionId, options });
-            if (pendingQuestions.size > PENDING_QUESTIONS_MAX) {
-              const oldest = pendingQuestions.keys().next().value!;
-              pendingQuestions.delete(oldest);
+          // WhatsApp polls require 2–12 options; outside that, fall back to text.
+          if (options.length < 2 || options.length > 12) {
+            const optionLines = options.map((o) => `  ${optionToCommand(o.label)}`).join('\n');
+            const text = `*${title}*\n\n${question}\n\nReply with:\n${optionLines}`;
+            const msgId = await sendRawMessage(platformId, text);
+            if (msgId) {
+              pendingQuestions.set(platformId, { questionId, options });
+              if (pendingQuestions.size > PENDING_QUESTIONS_MAX) {
+                const oldest = pendingQuestions.keys().next().value!;
+                pendingQuestions.delete(oldest);
+              }
             }
+            return msgId;
           }
-          return msgId;
+
+          // Poll name carries only the prompt — fold title + question into it.
+          const name = (question ? `${title}\n\n${question}` : title).slice(0, 255);
+          try {
+            await ensureTcToken(platformId);
+            const sent = await sock.sendMessage(platformId, {
+              poll: {
+                name,
+                values: options.map((o) => o.label.slice(0, 100)),
+                selectableCount: 1,
+              },
+            });
+            const msgId = sent?.key?.id ?? undefined;
+            if (msgId && sent?.message) {
+              sentMessageCache.set(msgId, sent.message);
+              questionPolls.set(msgId, { questionId, options, chatJid: platformId });
+              if (questionPolls.size > PENDING_QUESTIONS_MAX) {
+                const oldest = questionPolls.keys().next().value!;
+                questionPolls.delete(oldest);
+              }
+            }
+            return msgId;
+          } catch (err) {
+            log.error('Failed to send ask_question poll', { platformId, questionId, err });
+            return;
+          }
         }
 
         // Reaction → emoji on a message
