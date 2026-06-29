@@ -16,7 +16,13 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { computeIsMention, isBotMentionedInGroup, parseWhatsAppMentions } from './whatsapp.js';
+import {
+  computeIsMention,
+  isBotMentionedInGroup,
+  parseWhatsAppMentions,
+  extractQuotedContext,
+  summarizeQuotedMessage,
+} from './whatsapp.js';
 
 const BOT_PHONE_JID = '15550009999@s.whatsapp.net';
 const BOT_LID_USER = '987654321';
@@ -158,5 +164,77 @@ describe('parseWhatsAppMentions', () => {
     const { text, mentions } = parseWhatsAppMentions('(@15551234567) wrote this');
     expect(text).toBe('(@15551234567) wrote this');
     expect(mentions).toEqual(['15551234567@s.whatsapp.net']);
+  });
+});
+
+describe('extractQuotedContext (WhatsApp replies)', () => {
+  const opts = {
+    botPhoneJid: BOT_PHONE_JID,
+    botLidUser: BOT_LID_USER,
+    // Best-effort name resolver the adapter passes — here, just the JID digits.
+    resolveName: (jid: string) => jid.split('@')[0].split(':')[0],
+  };
+
+  it('returns undefined for a non-reply message', () => {
+    const normalized = { extendedTextMessage: { text: 'hi', contextInfo: {} } };
+    expect(extractQuotedContext(normalized, opts)).toBeUndefined();
+  });
+
+  it('returns undefined when there is no contextInfo at all', () => {
+    expect(extractQuotedContext({ conversation: 'hi' } as never, opts)).toBeUndefined();
+  });
+
+  it('extracts sender, text and id from a text reply', () => {
+    const normalized = {
+      extendedTextMessage: {
+        text: 'agreed',
+        contextInfo: {
+          stanzaId: 'ABC123',
+          participant: '15551112222@s.whatsapp.net',
+          quotedMessage: { conversation: 'the original message' },
+        },
+      },
+    };
+    expect(extractQuotedContext(normalized, opts)).toEqual({
+      sender: '15551112222',
+      text: 'the original message',
+      id: 'ABC123',
+    });
+  });
+
+  it('labels a reply to the bot with the assistant name', () => {
+    const normalized = {
+      extendedTextMessage: {
+        contextInfo: {
+          stanzaId: 'X1',
+          participant: BOT_PHONE_JID,
+          quotedMessage: { conversation: 'my earlier reply' },
+        },
+      },
+    };
+    const out = extractQuotedContext(normalized, opts);
+    // ASSISTANT_NAME comes from config; assert it is NOT the raw JID digits.
+    expect(out?.sender).not.toBe('15550009999');
+    expect(out?.text).toBe('my earlier reply');
+  });
+
+  it('uses a type placeholder when quoting a caption-less image', () => {
+    const normalized = {
+      extendedTextMessage: {
+        contextInfo: { stanzaId: 'IMG1', participant: '15551112222@s.whatsapp.net', quotedMessage: { imageMessage: {} } },
+      },
+    };
+    expect(extractQuotedContext(normalized, opts)?.text).toBe('[image]');
+  });
+
+  it('prefers an image caption over the placeholder', () => {
+    expect(summarizeQuotedMessage({ imageMessage: { caption: 'look at this' } })).toBe('look at this');
+  });
+
+  it('truncates very long quoted text', () => {
+    const long = 'x'.repeat(500);
+    const out = summarizeQuotedMessage({ conversation: long });
+    expect(out.length).toBe(300);
+    expect(out.endsWith('…')).toBe(true);
   });
 });

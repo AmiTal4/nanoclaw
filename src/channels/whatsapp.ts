@@ -273,6 +273,106 @@ export function computeIsMention(isGroup: boolean, botMentionedInGroup: boolean)
   return botMentionedInGroup ? true : undefined;
 }
 
+/**
+ * Subset of a normalized Baileys message carrying the per-type `contextInfo`
+ * that hosts a *reply/quote* (quotedMessage + participant + stanzaId).
+ * Structural so the helper and its tests don't need the full proto shape.
+ */
+type QuotedMessageContent = {
+  conversation?: string | null;
+  extendedTextMessage?: { text?: string | null } | null;
+  imageMessage?: { caption?: string | null } | null;
+  videoMessage?: { caption?: string | null } | null;
+  documentMessage?: { caption?: string | null; fileName?: string | null } | null;
+  audioMessage?: unknown;
+  stickerMessage?: unknown;
+  contactMessage?: unknown;
+  contactsArrayMessage?: unknown;
+  locationMessage?: unknown;
+  pollCreationMessage?: unknown;
+  pollCreationMessageV2?: unknown;
+  pollCreationMessageV3?: unknown;
+};
+type QuoteContextInfo = {
+  quotedMessage?: QuotedMessageContent | null;
+  participant?: string | null;
+  stanzaId?: string | null;
+} | null;
+type QuotedContextSource = {
+  extendedTextMessage?: { contextInfo?: QuoteContextInfo } | null;
+  imageMessage?: { contextInfo?: QuoteContextInfo } | null;
+  videoMessage?: { contextInfo?: QuoteContextInfo } | null;
+  documentMessage?: { contextInfo?: QuoteContextInfo } | null;
+  audioMessage?: { contextInfo?: QuoteContextInfo } | null;
+  stickerMessage?: { contextInfo?: QuoteContextInfo } | null;
+};
+
+const QUOTED_TEXT_MAX = 300;
+
+/** Best-effort one-line summary of a quoted message's body (text or a type tag). */
+export function summarizeQuotedMessage(qm: QuotedMessageContent | null | undefined): string {
+  if (!qm) return '';
+  let text =
+    qm.conversation ||
+    qm.extendedTextMessage?.text ||
+    qm.imageMessage?.caption ||
+    qm.videoMessage?.caption ||
+    qm.documentMessage?.caption ||
+    '';
+  if (!text) {
+    if (qm.imageMessage) text = '[image]';
+    else if (qm.videoMessage) text = '[video]';
+    else if (qm.audioMessage) text = '[voice message]';
+    else if (qm.documentMessage)
+      text = qm.documentMessage.fileName ? `[document: ${qm.documentMessage.fileName}]` : '[document]';
+    else if (qm.stickerMessage) text = '[sticker]';
+    else if (qm.contactMessage || qm.contactsArrayMessage) text = '[contact]';
+    else if (qm.locationMessage) text = '[location]';
+    else if (qm.pollCreationMessage || qm.pollCreationMessageV2 || qm.pollCreationMessageV3) text = '[poll]';
+    else text = '[message]';
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  return text.length > QUOTED_TEXT_MAX ? text.slice(0, QUOTED_TEXT_MAX - 1) + '…' : text;
+}
+
+/**
+ * Extract WhatsApp reply/quote context for the agent. When a user replies to an
+ * earlier message, WhatsApp carries the quoted message in
+ * `contextInfo.quotedMessage` (+ `participant` = its author, `stanzaId` = its
+ * id) on the text/caption-bearing message types. We surface it as
+ * `content.replyTo = { sender, text, id }`, which the agent-runner formatter
+ * renders as `<quoted_message from="sender">text</quoted_message>` with a
+ * `reply_to="id"` attribute (container/agent-runner/src/formatter.ts).
+ *
+ * Exported for unit testing. `resolveName` turns a non-bot author JID into a
+ * display string (the caller passes a sync, best-effort resolver).
+ */
+export function extractQuotedContext(
+  normalized: QuotedContextSource,
+  opts: { botPhoneJid: string | undefined; botLidUser: string | undefined; resolveName: (jid: string) => string },
+): { sender: string; text: string; id?: string } | undefined {
+  const ctx =
+    normalized.extendedTextMessage?.contextInfo ??
+    normalized.imageMessage?.contextInfo ??
+    normalized.videoMessage?.contextInfo ??
+    normalized.documentMessage?.contextInfo ??
+    normalized.audioMessage?.contextInfo ??
+    normalized.stickerMessage?.contextInfo;
+  if (!ctx || (!ctx.quotedMessage && !ctx.stanzaId)) return undefined;
+
+  const botLidJid = opts.botLidUser ? `${opts.botLidUser}@lid` : undefined;
+  const participant = ctx.participant || '';
+  const bare = participant.split(':')[0];
+  const isBotAuthor = (!!opts.botPhoneJid && bare === opts.botPhoneJid) || (!!botLidJid && bare === botLidJid);
+  const sender = isBotAuthor ? ASSISTANT_NAME : participant ? opts.resolveName(participant) : 'Unknown';
+
+  return {
+    sender,
+    text: summarizeQuotedMessage(ctx.quotedMessage),
+    ...(ctx.stanzaId ? { id: ctx.stanzaId } : {}),
+  };
+}
+
 /** Map file extension to Baileys media message type. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?: string): any {
@@ -1012,6 +1112,22 @@ registerChannelAdapter('whatsapp', {
             // phone JID and LID (#2560).
             const botMentionedInGroup = isGroup && isBotMentionedInGroup(normalized, botPhoneJid, botLidUser);
 
+            // Surface WhatsApp reply/quote context so the agent sees which
+            // message was referenced (rendered as <quoted_message> by the
+            // agent-runner formatter from content.replyTo). Names for non-bot
+            // quoted authors are best-effort: LID→phone via the sync map, else
+            // the JID digits (Baileys doesn't carry the quoted author's name).
+            const resolveQuotedName = (jid: string): string => {
+              const lidUser = jid.endsWith('@lid') ? jid.split('@')[0].split(':')[0] : '';
+              const phoneJid = lidUser && lidToPhoneMap[lidUser] ? lidToPhoneMap[lidUser] : jid;
+              return phoneJid.split('@')[0].split(':')[0];
+            };
+            const quoted = extractQuotedContext(normalized, {
+              botPhoneJid,
+              botLidUser,
+              resolveName: resolveQuotedName,
+            });
+
             const inbound: InboundMessage = {
               id: msg.key.id || `wa-${Date.now()}`,
               kind: 'chat',
@@ -1026,6 +1142,7 @@ registerChannelAdapter('whatsapp', {
                 text: content,
                 sender,
                 senderName,
+                ...(quoted && { replyTo: quoted }),
                 ...(attachments.length > 0 && { attachments }),
                 fromMe,
                 isBotMessage,
