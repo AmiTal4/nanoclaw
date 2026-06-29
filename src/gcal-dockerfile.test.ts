@@ -27,10 +27,9 @@ describe('container/Dockerfile installs @cocal/google-calendar-mcp', () => {
   it('installs the package pinned to that ARG in a pnpm global-install block', () => {
     // Match `pnpm install -g ... "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}"`,
     // tolerating line continuations between `install -g` and the package.
-    const installsCalendar =
-      /pnpm\s+install\s+-g[\s\S]*?@cocal\/google-calendar-mcp@\$\{CALENDAR_MCP_VERSION\}/.test(
-        text,
-      );
+    const installsCalendar = /pnpm\s+install\s+-g[\s\S]*?@cocal\/google-calendar-mcp@\$\{CALENDAR_MCP_VERSION\}/.test(
+      text,
+    );
     expect(installsCalendar).toBe(true);
   });
 });

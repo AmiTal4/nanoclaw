@@ -65,7 +65,10 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
-    disabledTools: (() => { const parsed = JSON.parse(row.disabled_tools) as string[]; return parsed.length > 0 ? parsed : undefined; })(),
+    disabledTools: (() => {
+      const parsed = JSON.parse(row.disabled_tools) as string[];
+      return parsed.length > 0 ? parsed : undefined;
+    })(),
     blockLocalWebFetch: row.block_local_web_fetch === 1 ? true : undefined,
   };
 }
