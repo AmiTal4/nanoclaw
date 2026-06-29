@@ -27,8 +27,9 @@ registerResource({
       name: 'instance',
       type: 'string',
       description:
-        'Adapter instance name. Defaults to channel_type (the default instance). Only needed for multi-instance setups.',
-      computedDefault: (values) => values.channel_type as string,
+        'Adapter instance that owns this chat, when running N adapters of one channel type. Defaults to channel_type (the default instance) when omitted.',
+      defaultFrom: 'channel_type',
+      updatable: true,
     },
     {
       name: 'name',

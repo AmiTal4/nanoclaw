@@ -30,10 +30,10 @@ export interface ColumnDef {
   updatable?: boolean;
   /** Default value on create when not provided. */
   default?: unknown;
+  /** Default to another column's resolved value on create when not provided. */
+  defaultFrom?: string;
   /** Allowed values (shown in help). */
   enum?: string[];
-  /** Compute default from other column values when not provided on create. */
-  computedDefault?: (values: Record<string, unknown>) => unknown;
 }
 
 export interface CustomOperation {
@@ -152,12 +152,8 @@ function genericCreate(def: ResourceDef) {
         throw new Error(`--${col.name.replace(/_/g, '-')} is required`);
       } else if (col.default !== undefined) {
         values[col.name] = col.default;
-      }
-    }
-
-    for (const col of def.columns) {
-      if (col.computedDefault && values[col.name] === undefined) {
-        values[col.name] = col.computedDefault(values);
+      } else if (col.defaultFrom !== undefined && values[col.defaultFrom] !== undefined) {
+        values[col.name] = values[col.defaultFrom];
       }
     }
 
