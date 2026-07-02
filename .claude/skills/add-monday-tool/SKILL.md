@@ -159,6 +159,22 @@ Kill any existing agent containers so they respawn with the new `mcpServers` con
 docker ps -q --filter 'name=nanoclaw-v2-' | xargs -r docker kill
 ```
 
+### Check for a pinned per-group image (easy to miss)
+
+If a group ever went through the self-mod `install_packages` flow (or `ncl groups config add-package`), it has its own image tag pinned in the DB that **permanently overrides `:latest`** — rebuilding `container/Dockerfile` and running `./container/build.sh` does nothing for that group until its per-group image is also rebuilt:
+
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT agent_group_id, image_tag FROM container_configs WHERE image_tag IS NOT NULL;"
+```
+
+For each `<group-id>` listed, rebuild its per-group image (re-derives `FROM` the current `:latest`, so it picks up `monday-api-mcp` too):
+
+```bash
+ncl groups restart --id <group-id> --rebuild
+```
+
+Groups with no row in that query already run `:latest` directly and need nothing extra here — killing the container (previous step) is enough. Skipping this check is the most likely way this skill silently "does nothing": the MCP server config registers fine, `container/Dockerfile` builds fine, but the actual running container never gets the binary, and the agent's own tool-call failure tends to read like an auth problem (misleadingly), not a missing-binary problem.
+
 ## Phase 5: Verify
 
 ### Test from a wired agent
@@ -166,6 +182,8 @@ docker ps -q --filter 'name=nanoclaw-v2-' | xargs -r docker kill
 > Send: **"what boards do I have on monday.com?"** or **"show me items on board X assigned to me"**.
 >
 > First call takes 2–3s while the MCP server starts and OneCLI does the token exchange.
+>
+> If the agent reports something like "not authenticated" with monday.com already showing `connected` in `onecli apps get --provider monday`, don't assume it's a real credential problem — check first whether that group's container is actually running an image with `mcp-server-monday-api` installed (see the per-group image check above): `docker inspect <container-name> --format '{{.Config.Image}}'`, then `docker run --rm --entrypoint sh <that-image> -c 'command -v mcp-server-monday-api'`.
 
 ### Check logs if the tool isn't working
 

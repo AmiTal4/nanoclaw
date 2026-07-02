@@ -28,10 +28,9 @@ describe('container/Dockerfile installs @mondaydotcomorg/monday-api-mcp', () => 
   it('installs the package pinned to that ARG in a pnpm global-install block', () => {
     // Match `pnpm install -g ... "@mondaydotcomorg/monday-api-mcp@${MONDAY_MCP_VERSION}"`,
     // tolerating line continuations between `install -g` and the package.
-    const installsMonday =
-      /pnpm\s+install\s+-g[\s\S]*?@mondaydotcomorg\/monday-api-mcp@\$\{MONDAY_MCP_VERSION\}/.test(
-        text,
-      );
+    const installsMonday = /pnpm\s+install\s+-g[\s\S]*?@mondaydotcomorg\/monday-api-mcp@\$\{MONDAY_MCP_VERSION\}/.test(
+      text,
+    );
     expect(installsMonday).toBe(true);
   });
 });
