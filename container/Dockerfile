@@ -26,6 +26,7 @@ ARG BWS_VERSION=2.1.0
 ARG GMAIL_MCP_VERSION=1.1.11
 ARG CALENDAR_MCP_VERSION=2.6.1
 ARG GWORKSPACE_MCP_VERSION=1.0.2
+ARG MONDAY_MCP_VERSION=3.2.0
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -125,6 +126,7 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
         "@gongrzhe/server-gmail-autoauth-mcp@${GMAIL_MCP_VERSION}" \
         "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}" \
         "@alanse/mcp-server-google-workspace@${GWORKSPACE_MCP_VERSION}" \
+        "@mondaydotcomorg/monday-api-mcp@${MONDAY_MCP_VERSION}" \
         "zod-to-json-schema@3.22.5"
 
 # ---- ncl CLI wrapper ----------------------------------------------------------
