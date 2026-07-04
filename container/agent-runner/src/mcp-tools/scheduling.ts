@@ -150,7 +150,11 @@ export const listTasks: McpToolDefinition = {
 
     const lines = (rows as Array<{ id: string; status: string; process_after: string | null; recurrence: string | null; content: string }>).map((r) => {
       const content = JSON.parse(r.content);
-      const prompt = (content.prompt as string || '').slice(0, 80);
+      // Array.from splits on full codepoints, not raw UTF-16 code units, so a
+      // slice never lands mid-surrogate-pair (which produced an unpaired
+      // surrogate here before — poisoned the transcript and broke every
+      // later API call that replayed this history).
+      const prompt = Array.from((content.prompt as string) || '').slice(0, 80).join('');
       return `- ${r.id} [${r.status}] at=${r.process_after || 'now'} ${r.recurrence ? `recur=${r.recurrence} ` : ''}→ ${prompt}`;
     });
 
