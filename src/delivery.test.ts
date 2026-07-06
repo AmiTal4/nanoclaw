@@ -290,6 +290,157 @@ describe('deliverSessionMessages — instance resolution', () => {
   });
 });
 
+describe('deliverSessionMessages — cross-session mirror', () => {
+  function readInboundRows(agentGroupId: string, sessionId: string): Array<Record<string, unknown>> {
+    const inDb = openInboundDb(agentGroupId, sessionId);
+    const rows = inDb.prepare('SELECT * FROM messages_in').all() as Array<Record<string, unknown>>;
+    inDb.close();
+    return rows;
+  }
+
+  function seedSecondWiredChat(): void {
+    createMessagingGroup({
+      id: 'mg-2',
+      channel_type: 'whatsapp',
+      platform_id: 'whatsapp:999',
+      name: 'Wired Chat',
+      is_group: 0,
+      unknown_sender_policy: 'public',
+      created_at: now(),
+    });
+    // Wiring auto-creates the agent_destinations ACL row.
+    createMessagingGroupAgent({
+      id: 'mga-2',
+      messaging_group_id: 'mg-2',
+      agent_group_id: 'ag-1',
+      engage_mode: 'mention',
+      engage_pattern: null,
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+  }
+
+  it('mirrors a cross-session send into the session wired to the target chat', async () => {
+    seedAgentAndChannel();
+    seedSecondWiredChat();
+
+    // The session that owns the conversation with the recipient.
+    const { session: wiredSession } = resolveSession('ag-1', 'mg-2', null, 'shared');
+    // A different session of the same agent group (e.g. handling an a2a relay).
+    const { session: senderSession } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const outDb = new Database(outboundDbPath('ag-1', senderSession.id));
+    outDb
+      .prepare(
+        `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES ('out-relay', datetime('now'), 'chat', 'whatsapp:999', 'whatsapp', ?)`,
+      )
+      .run(JSON.stringify({ text: 'meeting moved to Wednesday' }));
+    outDb.close();
+
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-relay';
+      },
+    });
+
+    await deliverSessionMessages(senderSession);
+
+    const rows = readInboundRows('ag-1', wiredSession.id);
+    const mirror = rows.find((r) => r.id === 'mirror-out-relay');
+    expect(mirror).toBeDefined();
+    expect(mirror!.trigger).toBe(0); // context-only: must not wake the container
+    expect(mirror!.kind).toBe('chat');
+    expect(mirror!.source_session_id).toBe(senderSession.id);
+    const content = JSON.parse(mirror!.content as string);
+    expect(content.text).toBe('meeting moved to Wednesday');
+    expect(content.sender).toContain('Test Agent');
+    expect(content.sender).toContain('you');
+  });
+
+  it('does not mirror a reply to the session own origin chat', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-own-chat');
+
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-own';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    const rows = readInboundRows('ag-1', session.id);
+    expect(rows.find((r) => String(r.id).startsWith('mirror-'))).toBeUndefined();
+  });
+
+  it('does not mirror (and still delivers) when no session is wired to the target chat', async () => {
+    seedAgentAndChannel();
+    seedSecondWiredChat();
+    // NOTE: no session resolved for mg-2 — only the ACL wiring exists.
+    const { session: senderSession } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const outDb = new Database(outboundDbPath('ag-1', senderSession.id));
+    outDb
+      .prepare(
+        `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES ('out-nosess', datetime('now'), 'chat', 'whatsapp:999', 'whatsapp', ?)`,
+      )
+      .run(JSON.stringify({ text: 'hello there' }));
+    outDb.close();
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, _pid, _tid, _kind, content) {
+        calls.push(content);
+        return 'plat-nosess';
+      },
+    });
+
+    await deliverSessionMessages(senderSession);
+    expect(calls).toHaveLength(1);
+
+    const inDb = openInboundDb('ag-1', senderSession.id);
+    const delivered = getDeliveredIds(inDb);
+    inDb.close();
+    expect(delivered.has('out-nosess')).toBe(true);
+  });
+
+  it('mirrors operation payloads (poll) as readable text and skips edits/reactions', async () => {
+    seedAgentAndChannel();
+    seedSecondWiredChat();
+    const { session: wiredSession } = resolveSession('ag-1', 'mg-2', null, 'shared');
+    const { session: senderSession } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const outDb = new Database(outboundDbPath('ag-1', senderSession.id));
+    const insert = outDb.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'chat', 'whatsapp:999', 'whatsapp', ?)`,
+    );
+    insert.run('out-poll', JSON.stringify({ operation: 'poll', name: 'Lunch?', values: ['Pizza', 'Sushi'] }));
+    insert.run('out-react', JSON.stringify({ operation: 'reaction', messageId: 'x', emoji: 'heart' }));
+    outDb.close();
+
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-ops';
+      },
+    });
+
+    await deliverSessionMessages(senderSession);
+
+    const rows = readInboundRows('ag-1', wiredSession.id);
+    const pollMirror = rows.find((r) => r.id === 'mirror-out-poll');
+    expect(pollMirror).toBeDefined();
+    expect(JSON.parse(pollMirror!.content as string).text).toBe('[poll] Lunch? — Pizza / Sushi');
+    expect(rows.find((r) => r.id === 'mirror-out-react')).toBeUndefined();
+  });
+});
+
 describe('deliverSessionMessages — permission check', () => {
   it('rejects delivery to an unauthorized channel destination', async () => {
     seedAgentAndChannel();
