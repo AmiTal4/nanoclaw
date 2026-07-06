@@ -221,7 +221,11 @@ describe('extractQuotedContext (WhatsApp replies)', () => {
   it('uses a type placeholder when quoting a caption-less image', () => {
     const normalized = {
       extendedTextMessage: {
-        contextInfo: { stanzaId: 'IMG1', participant: '15551112222@s.whatsapp.net', quotedMessage: { imageMessage: {} } },
+        contextInfo: {
+          stanzaId: 'IMG1',
+          participant: '15551112222@s.whatsapp.net',
+          quotedMessage: { imageMessage: {} },
+        },
       },
     };
     expect(extractQuotedContext(normalized, opts)?.text).toBe('[image]');
