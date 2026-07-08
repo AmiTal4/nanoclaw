@@ -443,8 +443,14 @@ function outboundMirrorText(content: Record<string, unknown>): string | null {
  * fabricated (see groups bug report: cross-session outbound logging).
  *
  * The mirror row is trigger=0 (accumulates silently, never wakes the
- * container) and renders in the formatter as a normal <message> whose sender
- * identifies the agent itself, so the transcript reads correctly.
+ * container) and carries `origin: 'self-mirror'` in its content. The formatter
+ * renders that as an `origin="self-mirror"` attribute on the <message> tag —
+ * a host-only marker platform users cannot reproduce (attributes are
+ * formatter-generated and message bodies are XML-escaped; a user-chosen
+ * display name only ever lands inside the escaped `sender` attribute).
+ * The marker must NOT live in free sender text: a recipient could set their
+ * display name to mimic it, and agents rightly treat mimicable provenance
+ * claims as spoofing (this happened — see the groups bug report follow-up).
  */
 function mirrorToWiredSession(
   msg: { id: string; kind: string; thread_id: string | null },
@@ -471,7 +477,8 @@ function mirrorToWiredSession(
     threadId: msg.thread_id,
     content: JSON.stringify({
       text,
-      sender: `${agentName} (you — sent from another session)`,
+      sender: agentName,
+      origin: 'self-mirror',
     }),
     trigger: 0,
     sourceSessionId: session.id,

@@ -357,8 +357,10 @@ describe('deliverSessionMessages — cross-session mirror', () => {
     expect(mirror!.source_session_id).toBe(senderSession.id);
     const content = JSON.parse(mirror!.content as string);
     expect(content.text).toBe('meeting moved to Wednesday');
-    expect(content.sender).toContain('Test Agent');
-    expect(content.sender).toContain('you');
+    // Provenance is the host-only origin flag, NOT free sender text — a
+    // recipient could set their display name to mimic any sender string.
+    expect(content.sender).toBe('Test Agent');
+    expect(content.origin).toBe('self-mirror');
   });
 
   it('does not mirror a reply to the session own origin chat', async () => {

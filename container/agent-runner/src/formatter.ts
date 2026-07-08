@@ -177,8 +177,14 @@ function formatSingleChat(msg: MessageInRow): string {
   const attachmentsSuffix = formatAttachments(content.attachments);
 
   const fromAttr = originAttr(msg);
+  // Host-only provenance marker for cross-session outbound mirrors (see
+  // src/delivery.ts mirrorToWiredSession on the host). Only the exact host
+  // value is honored — never arbitrary content — so a platform user cannot
+  // reproduce this attribute: adapters don't set `origin`, user text is
+  // XML-escaped into the body, and display names land inside `sender`.
+  const mirrorAttr = content.origin === 'self-mirror' ? ' origin="self-mirror"' : '';
 
-  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
+  return `<message${idAttr}${fromAttr}${mirrorAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
 }
 
 /**
