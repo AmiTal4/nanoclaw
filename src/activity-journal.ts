@@ -38,7 +38,7 @@ const KEEP_BYTES = 128 * 1024;
 const EXCERPT_CHARS = 120;
 
 const HEADER =
-  '<!-- activity-log.md — journal of this agent group\'s activity across ALL of its sessions,\n' +
+  "<!-- activity-log.md — journal of this agent group's activity across ALL of its sessions,\n" +
   '     written by the NanoClaw host (read-only inside containers; agents cannot edit it).\n' +
   '     Format: <utc-time> [in|out|task-*] <chat> session=<session-id> :: <excerpt> -->\n';
 

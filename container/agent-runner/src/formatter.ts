@@ -183,8 +183,14 @@ function formatSingleChat(msg: MessageInRow): string {
   // reproduce this attribute: adapters don't set `origin`, user text is
   // XML-escaped into the body, and display names land inside `sender`.
   const mirrorAttr = content.origin === 'self-mirror' ? ' origin="self-mirror"' : '';
+  // Sender-session provenance, host-stamped on the DB row (never from message
+  // content). Set on agent-to-agent inbound and host mirrors. Lets the agent
+  // tell two parallel sessions of the SAME peer agent apart — without it,
+  // contradictory answers from a peer's two sessions read as one entity
+  // lying/being impersonated (the Edna split-brain incident).
+  const sessionAttr = msg.source_session_id ? ` from_session="${escapeXml(msg.source_session_id)}"` : '';
 
-  return `<message${idAttr}${fromAttr}${mirrorAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
+  return `<message${idAttr}${fromAttr}${mirrorAttr}${sessionAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
 }
 
 /**

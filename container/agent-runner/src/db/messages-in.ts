@@ -38,6 +38,8 @@ export interface MessageInRow {
   channel_type: string | null;
   thread_id: string | null;
   content: string;
+  /** For agent-to-agent inbound and host mirrors: the session that emitted it */
+  source_session_id?: string | null;
 }
 
 // Cap on how many messages reach the agent in one prompt. Read from

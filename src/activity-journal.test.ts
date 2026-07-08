@@ -34,17 +34,12 @@ vi.mock('./config.js', async () => {
 const TEST_DIR = '/tmp/nanoclaw-test-journal';
 const GROUPS = path.join(TEST_DIR, 'groups');
 
-import {
-  initTestDb,
-  closeDb,
-  runMigrations,
-  createAgentGroup,
-  createMessagingGroup,
-} from './db/index.js';
+import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { ensureContainerConfig, updateContainerConfigScalars } from './db/container-configs.js';
 import { journalMessageIn, journalMessageOut, journalTask, ensureActivityLog } from './activity-journal.js';
 import { resolveSession, writeSessionMessage, outboundDbPath } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import { performAgentRoute } from './modules/agent-to-agent/agent-route.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -101,7 +96,9 @@ describe('activity journal — module behavior', () => {
     const text = logText();
     expect(text).toContain('[in] whatsapp:123@s.whatsapp.net sender="Asaf" session=sess-a :: hello world');
     expect(text).toContain('[out] whatsapp-asaf session=sess-a :: hi back');
-    expect(text).toContain('[task-scheduled] task-1 next=2026-07-09T07:00:00.000Z recurrence="0 7 * * *" session=sess-a');
+    expect(text).toContain(
+      '[task-scheduled] task-1 next=2026-07-09T07:00:00.000Z recurrence="0 7 * * *" session=sess-a',
+    );
   });
 
   it('respects the per-group off switch and missing group folders (no-ops, never throws)', () => {
@@ -125,7 +122,9 @@ describe('activity journal — module behavior', () => {
     journalMessageIn('ag-j1', 'sess-a', {
       content: JSON.stringify({ text: '🎉'.repeat(200) }),
     });
-    const line = logText().split('\n').find((l) => l.includes('[in]'))!;
+    const line = logText()
+      .split('\n')
+      .find((l) => l.includes('[in]'))!;
     expect(line).toContain('🎉'.repeat(120) + '…');
     expect(line).not.toContain('�'); // no split surrogate pairs
   });
@@ -187,6 +186,39 @@ describe('activity journal — live hooks', () => {
     const text = logText();
     expect(text).toContain('routed message');
     expect(text).not.toContain('mirrored copy');
+  });
+
+  it('agent-to-agent routes journal an [out] in the SOURCE group (split-brain guard)', async () => {
+    seedGroup();
+    createAgentGroup({
+      id: 'ag-j2',
+      name: 'Peer Agent',
+      folder: 'peer-agent',
+      agent_provider: null,
+      created_at: now(),
+    });
+    fs.mkdirSync(path.join(GROUPS, 'peer-agent'), { recursive: true });
+    createMessagingGroup({
+      id: 'mg-j1',
+      channel_type: 'whatsapp',
+      platform_id: '123@s.whatsapp.net',
+      name: 'Chat',
+      is_group: 0,
+      unknown_sender_policy: 'public',
+      created_at: now(),
+    });
+    const { session: source } = resolveSession('ag-j1', 'mg-j1', null, 'shared');
+
+    await performAgentRoute(
+      { id: 'out-a2a-1', platform_id: 'ag-j2', content: JSON.stringify({ text: 'please verify' }), in_reply_to: null },
+      source,
+      'ag-j2',
+    );
+
+    // Source group journal shows the send; target group journal shows receipt.
+    expect(logText()).toContain(`[out] agent:Peer Agent session=${source.id} :: please verify`);
+    const peerLog = fs.readFileSync(path.join(GROUPS, 'peer-agent', 'activity-log.md'), 'utf8');
+    expect(peerLog).toContain(':: please verify');
   });
 
   it('delivery journals [out] with the wired chat name on successful sends', async () => {

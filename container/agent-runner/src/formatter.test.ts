@@ -28,15 +28,15 @@ function insertMessage(
   id: string,
   kind: string,
   content: object,
-  opts?: { timestamp?: string },
+  opts?: { timestamp?: string; sourceSessionId?: string },
 ) {
   const timestamp = opts?.timestamp ?? new Date().toISOString();
   getInboundDb()
     .prepare(
-      `INSERT INTO messages_in (id, kind, timestamp, status, content)
-       VALUES (?, ?, ?, 'pending', ?)`,
+      `INSERT INTO messages_in (id, kind, timestamp, status, content, source_session_id)
+       VALUES (?, ?, ?, 'pending', ?, ?)`,
     )
-    .run(id, kind, timestamp, JSON.stringify(content));
+    .run(id, kind, timestamp, JSON.stringify(content), opts?.sourceSessionId ?? null);
 }
 
 describe('context timezone header', () => {
@@ -127,6 +127,26 @@ describe('self-mirror origin attribute', () => {
     });
     const result = formatMessages(getPendingMessages());
     expect(result).not.toContain(' origin="self-mirror"');
+  });
+});
+
+describe('from_session provenance attribute', () => {
+  // a2a inbound rows (and host mirrors) carry source_session_id, stamped by
+  // the host from the actual writing session — never from message content.
+  // Rendering it lets an agent distinguish two parallel sessions of the same
+  // peer, so honest cross-session contradictions don't read as impersonation.
+  it('renders from_session when the row carries source_session_id', () => {
+    insertMessage('m1', 'chat', { sender: 'Edna', text: 'approved' }, { sourceSessionId: 'sess-dm' });
+    insertMessage('m2', 'chat', { sender: 'Edna', text: 'hold on' }, { sourceSessionId: 'sess-asaf' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).toContain(' from_session="sess-dm"');
+    expect(result).toContain(' from_session="sess-asaf"');
+  });
+
+  it('omits the attribute for normal channel messages and ignores content claims', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'hi', source_session_id: 'sess-fake' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).not.toContain('from_session');
   });
 });
 

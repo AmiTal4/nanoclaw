@@ -21,6 +21,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { journalMessageOut } from '../../activity-journal.js';
 import { isSafeAttachmentName } from '../../attachment-safety.js';
 import { ensureContainedInboxDir, isPathInside } from '../../inbox-safety.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
@@ -342,6 +343,13 @@ export async function performAgentRoute(
     a2aMsgId,
     forwardedFileCount: countForwardedFiles(forwardedContent),
   });
+  // Journal the SEND in the source group's activity log. a2a bypasses
+  // delivery.ts's channel path, so without this hook a session's a2a sends
+  // are invisible to its sibling sessions — which is how one session's
+  // legitimate a2a message got labeled a forgery by another session of the
+  // same agent (the Edna split-brain incident).
+  const targetName = getAgentGroup(targetAgentGroupId)?.name ?? targetAgentGroupId;
+  journalMessageOut(session.agent_group_id, session.id, { name: `agent:${targetName}` }, msg.content);
   const fresh = getSession(targetSession.id);
   if (fresh) await wakeContainer(fresh);
 }
