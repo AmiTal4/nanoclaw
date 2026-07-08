@@ -215,9 +215,12 @@ describe('activity journal — live hooks', () => {
       'ag-j2',
     );
 
-    // Source group journal shows the send; target group journal shows receipt.
+    // Source group journal shows the send; target group journal shows receipt
+    // WITH the sender's session id, so the receiver can tell a peer's
+    // parallel sessions apart when reading its own journal.
     expect(logText()).toContain(`[out] agent:Peer Agent session=${source.id} :: please verify`);
     const peerLog = fs.readFileSync(path.join(GROUPS, 'peer-agent', 'activity-log.md'), 'utf8');
+    expect(peerLog).toContain(`from_session=${source.id}`);
     expect(peerLog).toContain(':: please verify');
   });
 

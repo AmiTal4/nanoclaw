@@ -40,7 +40,7 @@ const EXCERPT_CHARS = 120;
 const HEADER =
   "<!-- activity-log.md — journal of this agent group's activity across ALL of its sessions,\n" +
   '     written by the NanoClaw host (read-only inside containers; agents cannot edit it).\n' +
-  '     Format: <utc-time> [in|out|task-*] <chat> session=<session-id> :: <excerpt> -->\n';
+  '     Format: <utc-time> [in|out|task-*] <chat> [from_session=<sender session>] session=<receiving session> :: <excerpt> -->\n';
 
 export function activityLogPath(groupFolder: string): string {
   return path.join(GROUPS_DIR, groupFolder, ACTIVITY_LOG_FILENAME);
@@ -74,13 +74,24 @@ export function ensureActivityLog(agentGroupId: string): string | null {
 export function journalMessageIn(
   agentGroupId: string,
   sessionId: string,
-  msg: { channelType?: string | null; platformId?: string | null; content: string; trigger?: 0 | 1 },
+  msg: {
+    channelType?: string | null;
+    platformId?: string | null;
+    content: string;
+    trigger?: 0 | 1;
+    sourceSessionId?: string | null;
+  },
 ): void {
   const content = parseContent(msg.content);
   const sender = firstString(content.senderName, content.sender, content.author?.fullName);
+  // `session=` is the RECEIVING session; `from_session=` (a2a only) is the
+  // sender's session. Without the latter, a reader comparing [in] lines sees
+  // the same session id on every row and wrongly concludes one peer session
+  // sent them all — browser "proved" a forgery from exactly that misreading.
+  const fromSession = msg.sourceSessionId ? ` from_session=${msg.sourceSessionId}` : '';
   append(
     agentGroupId,
-    `[in] ${chatLabel(msg.channelType, msg.platformId)}${sender ? ` sender=${JSON.stringify(sender)}` : ''}` +
+    `[in] ${chatLabel(msg.channelType, msg.platformId)}${fromSession}${sender ? ` sender=${JSON.stringify(sender)}` : ''}` +
       `${msg.trigger === 0 ? ' (context-only)' : ''} session=${sessionId} :: ${excerpt(content)}`,
   );
 }

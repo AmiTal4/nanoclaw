@@ -254,6 +254,7 @@ export function writeSessionMessage(
       platformId: message.platformId,
       content,
       trigger: message.trigger ?? 1,
+      sourceSessionId: message.sourceSessionId,
     });
   }
 
