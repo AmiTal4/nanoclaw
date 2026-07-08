@@ -9,6 +9,7 @@
  */
 import type Database from 'better-sqlite3';
 
+import { journalTask } from '../../activity-journal.js';
 import { wakeContainer } from '../../container-runner.js';
 import { getSession } from '../../db/sessions.js';
 import { log } from '../../log.js';
@@ -18,7 +19,7 @@ import { cancelTask, insertTask, pauseTask, resumeTask, updateTask, type TaskUpd
 
 export async function handleScheduleTask(
   content: Record<string, unknown>,
-  _session: Session,
+  session: Session,
   inDb: Database.Database,
 ): Promise<void> {
   const taskId = content.taskId as string;
@@ -37,36 +38,46 @@ export async function handleScheduleTask(
     content: JSON.stringify({ prompt, script }),
   });
   log.info('Scheduled task created', { taskId, processAfter, recurrence });
+  journalTask(
+    session.agent_group_id,
+    session.id,
+    'scheduled',
+    taskId,
+    `next=${processAfter}${recurrence ? ` recurrence="${recurrence}"` : ''}`,
+  );
 }
 
 export async function handleCancelTask(
   content: Record<string, unknown>,
-  _session: Session,
+  session: Session,
   inDb: Database.Database,
 ): Promise<void> {
   const taskId = content.taskId as string;
   cancelTask(inDb, taskId);
   log.info('Task cancelled', { taskId });
+  journalTask(session.agent_group_id, session.id, 'cancelled', taskId);
 }
 
 export async function handlePauseTask(
   content: Record<string, unknown>,
-  _session: Session,
+  session: Session,
   inDb: Database.Database,
 ): Promise<void> {
   const taskId = content.taskId as string;
   pauseTask(inDb, taskId);
   log.info('Task paused', { taskId });
+  journalTask(session.agent_group_id, session.id, 'paused', taskId);
 }
 
 export async function handleResumeTask(
   content: Record<string, unknown>,
-  _session: Session,
+  session: Session,
   inDb: Database.Database,
 ): Promise<void> {
   const taskId = content.taskId as string;
   resumeTask(inDb, taskId);
   log.info('Task resumed', { taskId });
+  journalTask(session.agent_group_id, session.id, 'resumed', taskId);
 }
 
 export async function handleUpdateTask(
@@ -86,6 +97,7 @@ export async function handleUpdateTask(
   }
   const touched = updateTask(inDb, taskId, update);
   log.info('Task updated', { taskId, touched, fields: Object.keys(update) });
+  if (touched > 0) journalTask(session.agent_group_id, session.id, 'updated', taskId);
   if (touched === 0) {
     // Notify the agent that update_task matched nothing. Replicates the
     // old notifyAgent helper that used to live in delivery.ts — inlined

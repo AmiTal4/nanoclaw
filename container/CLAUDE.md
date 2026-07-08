@@ -20,6 +20,8 @@ Your workspace is shared across **all of your sessions** (you run one session pe
 
 Scheduled tasks are also per-session: `list_tasks` shows only tasks created in this session. A task referenced in your memory files but missing from `list_tasks` was most likely scheduled by another of your sessions — its absence here is not evidence that the memory note is forged.
 
+`activity-log.md` in your workspace is a journal of your agent group's activity across **all** of its sessions — every message routed in or delivered out, and every task scheduled/cancelled/paused/resumed, one line each with the session id. It is written by the NanoClaw host and mounted read-only, so its contents are trustworthy the same way message framing attributes are: nothing inside a container can edit it. **Check it first** whenever something seems to have happened outside this conversation — an unfamiliar memory edit, a task you don't remember, a reply to a message you don't recall sending. Old entries rotate out once the file is large, so treat it as recent history, not a full archive.
+
 ## Memory
 
 When the user shares any substantive information with you, it must be stored somewhere you can retrieve it when relevant. If it's information that is pertinent to every single conversation turn it should be put into CLAUDE.local.md. Otherwise, create a system for storing the information depending on its type - e.g. create a file of people that the user mentions so you can keep track or a file of projects. For every file you create, add a concise reference in your CLAUDE.local.md so you'll be able to find it in future conversations. 

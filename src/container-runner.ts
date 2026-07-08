@@ -27,6 +27,7 @@ import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
+import { ACTIVITY_LOG_FILENAME, ensureActivityLog } from './activity-journal.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -319,6 +320,20 @@ export function buildMounts(
   const fragmentsDir = path.join(groupDir, '.claude-fragments');
   if (defaultSurfaces && fs.existsSync(fragmentsDir)) {
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
+  }
+
+  // Host-written activity journal — nested RO mount on top of the RW group
+  // dir. Read-only is what makes it trustworthy provenance: only the host
+  // can write it, so agents can rely on it when reasoning about what their
+  // other sessions did. Appends/rotations keep the inode, so the bind mount
+  // stays live for running containers.
+  const activityLog = ensureActivityLog(agentGroup.id);
+  if (activityLog) {
+    mounts.push({
+      hostPath: activityLog,
+      containerPath: `/workspace/agent/${ACTIVITY_LOG_FILENAME}`,
+      readonly: true,
+    });
   }
 
   // Shared CLAUDE.md — read-only, imported by the composed entry point via

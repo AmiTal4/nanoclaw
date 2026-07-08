@@ -10,6 +10,7 @@ const SCALAR_COLUMNS = new Set([
   'max_messages_per_prompt',
   'cli_scope',
   'block_local_web_fetch',
+  'activity_journal',
 ]);
 const JSON_COLUMNS = new Set([
   'skills',
@@ -71,6 +72,7 @@ export function updateContainerConfigScalars(
       | 'max_messages_per_prompt'
       | 'cli_scope'
       | 'block_local_web_fetch'
+      | 'activity_journal'
     >
   >,
 ): void {

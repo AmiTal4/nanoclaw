@@ -91,6 +91,13 @@ export async function dispatch(
         return err(req.id, 'forbidden', 'Cannot change cli_scope from a group-scoped agent.');
       }
 
+      // Block activity_journal changes from group-scoped agents — an agent
+      // silencing its own host-written activity log would hide its cross-
+      // session actions from the operator and its sibling sessions.
+      if (req.args.activity_journal !== undefined || req.args['activity-journal'] !== undefined) {
+        return err(req.id, 'forbidden', 'Cannot change activity_journal from a group-scoped agent.');
+      }
+
       // Auto-fill agent-group-related args so the agent doesn't need
       // to pass its own group ID explicitly.
       const fill: Record<string, unknown> = {

@@ -27,6 +27,7 @@ export interface ContainerConfigRow {
   cli_scope: string; // 'disabled' | 'group' | 'global'
   disabled_tools: string; // JSON: string[]
   block_local_web_fetch: number; // 0 | 1
+  activity_journal: string; // 'on' | 'off' — host-written activity-log.md in the group workspace
   updated_at: string;
 }
 

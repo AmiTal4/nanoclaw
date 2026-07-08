@@ -67,6 +67,7 @@ export function backfillContainerConfigs(): void {
       cli_scope: 'group',
       disabled_tools: '[]',
       block_local_web_fetch: 0,
+      activity_journal: 'on',
       updated_at: new Date().toISOString(),
     };
 

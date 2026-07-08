@@ -9,6 +9,7 @@
  */
 import type Database from 'better-sqlite3';
 
+import { journalMessageOut } from './activity-journal.js';
 import { getRunningSessions, getActiveSessions, createPendingQuestion, findSessionForAgent } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -387,6 +388,17 @@ async function deliverMessage(
   });
 
   clearOutbox(session.agent_group_id, session.id, msg.id);
+
+  // Activity journal: record the delivered send in the group's shared
+  // activity-log.md (never throws) so sibling sessions can see it happened.
+  if (msg.kind === 'chat') {
+    journalMessageOut(
+      session.agent_group_id,
+      session.id,
+      { channelType: msg.channel_type, platformId: msg.platform_id, name: targetMg?.name },
+      msg.content,
+    );
+  }
 
   // Cross-session sends: if a *different* session of this agent group is
   // wired to the target chat, mirror a context-only record there so its
