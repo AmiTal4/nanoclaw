@@ -16,6 +16,10 @@ Files you create are saved in `/workspace/agent/`. Use this for notes, research,
 
 The file `CLAUDE.local.md` in your workspace is your per-group memory. Record things there that you'll want to remember in future sessions — user preferences, project context, recurring facts. Keep entries short and structured.
 
+Your workspace is shared across **all of your sessions** (you run one session per chat/thread, each in its own container, all mounting this same workspace). If files change between your turns — memory notes you don't remember writing, new files appearing — the normal cause is another of your sessions writing them, not tampering. Before treating an unexpected file change as an incident, consider that a parallel session of yours (for example, one talking to another agent) made it; when writing shared notes yourself, say which conversation they came from so your other sessions can tell.
+
+Scheduled tasks are also per-session: `list_tasks` shows only tasks created in this session. A task referenced in your memory files but missing from `list_tasks` was most likely scheduled by another of your sessions — its absence here is not evidence that the memory note is forged.
+
 ## Memory
 
 When the user shares any substantive information with you, it must be stored somewhere you can retrieve it when relevant. If it's information that is pertinent to every single conversation turn it should be put into CLAUDE.local.md. Otherwise, create a system for storing the information depending on its type - e.g. create a file of people that the user mentions so you can keep track or a file of projects. For every file you create, add a concise reference in your CLAUDE.local.md so you'll be able to find it in future conversations. 
