@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { findByName, getAllDestinations } from '../destinations.js';
-import { getMessageInBySeq } from '../db/messages-in.js';
+import { getChannelHistory, getMessageIn, getMessageInBySeq, type MessageInRow } from '../db/messages-in.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getCurrentInReplyTo } from '../db/session-state.js';
 import { getSessionRouting } from '../db/session-routing.js';
@@ -31,6 +31,14 @@ function ok(text: string) {
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
+}
+
+function parseContent(content: string): Record<string, any> {
+  try {
+    return JSON.parse(content) as Record<string, any>;
+  } catch {
+    return {};
+  }
 }
 
 function destinationList(): string {
@@ -495,4 +503,74 @@ export const sendContact: McpToolDefinition = {
   },
 };
 
-registerTools([sendMessage, sendFile, editMessage, addReaction, sendPoll, sendEvent, sendContact]);
+function formatHistoryLine(row: MessageInRow): string {
+  const content = parseContent(row.content);
+  const sender = content.sender || content.author?.fullName || content.author?.userName || 'Unknown';
+  const text = typeof content.text === 'string' && content.text.length > 0 ? content.text : '(no text)';
+  const thread = row.thread_id ? ` [thread ${row.thread_id}]` : '';
+  return `#${row.seq} ${row.timestamp} ${sender}${thread}: ${text}`;
+}
+
+export const fetchChannelHistory: McpToolDefinition = {
+  tool: {
+    name: 'fetch_channel_history',
+    description:
+      'Fetch recent stored messages from a channel this session receives. Returns compact lines oldest first; request only the context you need.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        channel: {
+          type: 'string',
+          description: 'Destination name. Defaults to the channel of the message currently being handled.',
+        },
+        thread: { type: 'string', description: 'Numeric inbound message id whose thread should be read.' },
+        limit: { type: 'number', description: 'Maximum messages (default 30, maximum 200).' },
+        before: { type: 'number', description: 'Only messages older than this numeric message id.' },
+      },
+    },
+  },
+  async handler(args) {
+    const limit = Math.max(1, Math.min(200, Number(args.limit) || 30));
+    let channelType: string | undefined;
+    let platformId: string | undefined;
+    let label: string;
+
+    if (args.channel) {
+      const destination = findByName(String(args.channel));
+      if (!destination) return err(`Unknown destination "${String(args.channel)}". Known: ${destinationList()}`);
+      channelType = destination.type === 'channel' ? destination.channelType : 'agent';
+      platformId = destination.type === 'channel' ? destination.platformId : destination.agentGroupId;
+      label = String(args.channel);
+    } else {
+      const currentId = getCurrentInReplyTo();
+      const current = currentId ? getMessageIn(currentId) : undefined;
+      if (!current?.channel_type || !current.platform_id) {
+        return err(`No current channel context; specify channel. Known: ${destinationList()}`);
+      }
+      channelType = current.channel_type;
+      platformId = current.platform_id;
+      label = '(current conversation)';
+    }
+
+    let threadId: string | undefined;
+    if (args.thread !== undefined) {
+      const seq = Number(args.thread);
+      const row = Number.isInteger(seq) && seq > 0 ? getMessageInBySeq(seq) : undefined;
+      if (!row) return err(`Message #${String(args.thread)} not found; thread must be a numeric message id.`);
+      const rootId = parseContent(row.content).id as string | undefined;
+      threadId = row.thread_id ?? (row.channel_type === 'slack' && rootId ? `${row.platform_id}:${rootId}` : undefined);
+      if (!threadId) return err(`Message #${seq} has no thread on this platform.`);
+    }
+
+    const beforeSeq = args.before === undefined ? undefined : Number(args.before);
+    if (beforeSeq !== undefined && (!Number.isInteger(beforeSeq) || beforeSeq <= 0)) {
+      return err('before must be a positive numeric message id.');
+    }
+    const rows = getChannelHistory({ channelType, platformId, threadId, beforeSeq, limit });
+    if (rows.length === 0) return ok(`No history found for ${label}.`);
+    log(`fetch_channel_history: ${rows.length} message(s) from ${label}`);
+    return ok(`${rows.length} message(s) from ${label} (oldest first):\n${rows.map(formatHistoryLine).join('\n')}`);
+  },
+};
+
+registerTools([sendMessage, sendFile, editMessage, addReaction, sendPoll, sendEvent, sendContact, fetchChannelHistory]);

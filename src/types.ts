@@ -26,6 +26,7 @@ export interface ContainerConfigRow {
   additional_mounts: string; // JSON: AdditionalMountConfig[]
   cli_scope: string; // 'disabled' | 'group' | 'global'
   activity_journal: string; // 'on' | 'off' — host-written activity-log.md
+  history_mode: string; // 'push' | 'pull' — accumulated context delivery mode
   updated_at: string;
 }
 

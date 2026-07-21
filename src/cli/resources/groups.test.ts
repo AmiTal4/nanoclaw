@@ -30,6 +30,7 @@ vi.mock('../../config.js', async () => {
 const TEST_DIR = '/tmp/nanoclaw-test-cli-groups';
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, getDb } from '../../db/index.js';
+import { configFromDb } from '../../container-config.js';
 import { createSession } from '../../db/sessions.js';
 import { dispatch } from '../dispatch.js';
 import { ensureContainerConfig, getContainerConfig } from '../../db/container-configs.js';
@@ -257,5 +258,41 @@ describe('groups config add-mount / remove-mount (host-only)', () => {
     );
     expect(rm.ok).toBe(true);
     expect(JSON.parse(getContainerConfig(GID)!.additional_mounts)).toEqual([]);
+  });
+});
+
+describe('groups config update --history-mode', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    runMigrations(initTestDb());
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  });
+
+  it('defaults to push, materializes pull, and rejects invalid values', async () => {
+    const id = 'ag-history';
+    const group = { id, name: 'history', folder: 'history', agent_provider: null, created_at: now() };
+    createAgentGroup(group);
+    ensureContainerConfig(id);
+
+    const before = await dispatch({ id: 'h1', command: 'groups-config-get', args: { id } }, { caller: 'host' });
+    expect(before.ok && (before.data as { history_mode: string }).history_mode).toBe('push');
+
+    const updated = await dispatch(
+      { id: 'h2', command: 'groups-config-update', args: { id, 'history-mode': 'pull' } },
+      { caller: 'host' },
+    );
+    expect(updated.ok && (updated.data as { history_mode: string }).history_mode).toBe('pull');
+    expect(configFromDb(getContainerConfig(id)!, group).historyMode).toBe('pull');
+
+    const invalid = await dispatch(
+      { id: 'h3', command: 'groups-config-update', args: { id, 'history-mode': 'sideways' } },
+      { caller: 'host' },
+    );
+    expect(invalid.ok).toBe(false);
   });
 });

@@ -21,6 +21,11 @@ Use `mcp__nanoclaw__send_poll({ to, name, options, allowMultipleAnswers? })` to 
 ### Sending events (`send_event`)
 
 Use `mcp__nanoclaw__send_event({ to, name, startTime, endTime?, description?, location?, call? })` to send an event invite. `to` is the required named destination. Times are ISO 8601; `call` may be `audio` or `video` on supported WhatsApp versions.
+
+### Reading channel history (`fetch_channel_history`)
+
+In busy group channels, surrounding conversation may be stored without being pushed into your prompt. When a request needs that missing context, call `mcp__nanoclaw__fetch_channel_history({ channel?, thread?, limit?, before? })`. `channel` defaults to the current conversation; `thread` is a numeric inbound message id; `limit` defaults to 30 (max 200); and `before` pages further back. Start with a small request and do not fetch history reflexively.
+
 ### Internal thoughts
 
 Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent.

@@ -18,6 +18,7 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  historyMode: 'push' | 'pull';
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,9 +48,27 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    historyMode: raw.historyMode === 'pull' ? 'pull' : 'push',
   };
 
   return _config;
+}
+
+export function setConfigForTest(overrides: Partial<RunnerConfig>): void {
+  _config = {
+    provider: 'claude',
+    assistantName: '',
+    groupName: '',
+    agentGroupId: '',
+    maxMessagesPerPrompt: DEFAULT_MAX_MESSAGES,
+    mcpServers: {},
+    historyMode: 'push',
+    ...overrides,
+  };
+}
+
+export function clearConfigForTest(): void {
+  _config = null;
 }
 
 /** Get the loaded config. Throws if loadConfig() hasn't been called. */

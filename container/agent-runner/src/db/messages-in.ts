@@ -60,6 +60,28 @@ function getMaxMessagesPerPrompt(): number {
   }
 }
 
+function getHistoryMode(): 'push' | 'pull' {
+  try {
+    return getConfig().historyMode;
+  } catch {
+    return 'push';
+  }
+}
+
+/** Ack accumulated context without deleting it from the inbound history mirror. */
+function ackContextRows(inbound: ReturnType<typeof openInboundDb>): void {
+  const rows = inbound.prepare("SELECT id FROM messages_in WHERE status = 'pending' AND trigger = 0").all() as Array<{
+    id: string;
+  }>;
+  if (rows.length === 0) return;
+  const acked = new Set(
+    (getOutboundDb().prepare('SELECT message_id FROM processing_ack').all() as Array<{ message_id: string }>).map(
+      (row) => row.message_id,
+    ),
+  );
+  markCompleted(rows.map((row) => row.id).filter((id) => !acked.has(id)));
+}
+
 /**
  * Fetch pending messages that are due for processing.
  * Reads from inbound.db (read-only), filters against processing_ack in outbound.db
@@ -76,12 +98,15 @@ export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
   const outbound = getOutboundDb();
 
   try {
+    const pull = getHistoryMode() === 'pull';
+    if (pull) ackContextRows(inbound);
     const onWakeFilter = hasOnWakeColumn(inbound) ? 'AND (on_wake = 0 OR ?1 = 1)' : '';
     const pending = inbound
       .prepare(
         `SELECT * FROM messages_in
          WHERE status = 'pending'
            AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
+           ${pull ? 'AND trigger = 1' : ''}
            ${onWakeFilter}
          ORDER BY seq DESC
          LIMIT ?2`,
@@ -160,6 +185,45 @@ export function getMessageIn(id: string): MessageInRow | undefined {
   const inbound = openInboundDb();
   try {
     return inbound.prepare('SELECT * FROM messages_in WHERE id = ?').get(id) as MessageInRow | undefined;
+  } finally {
+    inbound.close();
+  }
+}
+
+export interface ChannelHistoryFilter {
+  channelType?: string;
+  platformId?: string;
+  threadId?: string;
+  beforeSeq?: number;
+  limit: number;
+}
+
+/** Read stored inbound chat rows regardless of their processing acknowledgement. */
+export function getChannelHistory(filter: ChannelHistoryFilter): MessageInRow[] {
+  const inbound = openInboundDb();
+  try {
+    const where = ["kind IN ('chat', 'chat-sdk')"];
+    const params: Record<string, string | number> = { $limit: filter.limit };
+    if (filter.channelType !== undefined) {
+      where.push('channel_type = $channelType');
+      params.$channelType = filter.channelType;
+    }
+    if (filter.platformId !== undefined) {
+      where.push('platform_id = $platformId');
+      params.$platformId = filter.platformId;
+    }
+    if (filter.threadId !== undefined) {
+      where.push('thread_id = $threadId');
+      params.$threadId = filter.threadId;
+    }
+    if (filter.beforeSeq !== undefined) {
+      where.push('seq < $beforeSeq');
+      params.$beforeSeq = filter.beforeSeq;
+    }
+    const rows = inbound
+      .prepare(`SELECT * FROM messages_in WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT $limit`)
+      .all(params) as MessageInRow[];
+    return rows.reverse();
   } finally {
     inbound.close();
   }

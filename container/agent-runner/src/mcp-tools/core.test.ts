@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../db/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
-import { sendMessage } from './core.js';
+import { fetchChannelHistory, sendMessage } from './core.js';
 
 /**
  * Publish the a2a reply stamp the way the poll loop does: a direct write to
@@ -36,6 +36,12 @@ beforeEach(() => {
     .prepare(
       `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
        VALUES ('peer', 'Peer', 'agent', NULL, NULL, 'ag-peer')`,
+    )
+    .run();
+  getInboundDb()
+    .prepare(
+      `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+       VALUES ('dev', 'Dev', 'channel', 'slack', 'slack:C0DEV', NULL)`,
     )
     .run();
 });
@@ -72,5 +78,37 @@ describe('send_message MCP tool — in_reply_to plumbing', () => {
     const out = getUndeliveredMessages();
     expect(out).toHaveLength(1);
     expect(out[0].in_reply_to).toBeNull();
+  });
+});
+
+describe('fetch_channel_history MCP tool', () => {
+  function seed(seq: number, text: string, threadId: string | null = null): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, seq, kind, timestamp, trigger, platform_id, channel_type, thread_id, content)
+         VALUES (?, ?, 'chat-sdk', ?, 0, 'slack:C0DEV', 'slack', ?, ?)`,
+      )
+      .run(
+        `history-${seq}`,
+        seq,
+        `2026-07-12T10:00:${String(seq).padStart(2, '0')}.000Z`,
+        threadId,
+        JSON.stringify({ text, sender: 'Dana', id: `platform-${seq}` }),
+      );
+  }
+
+  it('returns named-channel history oldest first and supports paging', async () => {
+    seed(21, 'first');
+    seed(22, 'second');
+    seed(23, 'third');
+    const result = await fetchChannelHistory.handler({ channel: 'dev', limit: 2, before: 23 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text.indexOf('#21')).toBeLessThan(result.content[0].text.indexOf('#22'));
+    expect(result.content[0].text).not.toContain('#23');
+  });
+
+  it('requires a valid destination when there is no current message context', async () => {
+    const result = await fetchChannelHistory.handler({ channel: 'missing' });
+    expect(result.isError).toBe(true);
   });
 });

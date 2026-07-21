@@ -34,6 +34,7 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     additional_mounts: JSON.parse(row.additional_mounts),
     cli_scope: row.cli_scope,
     activity_journal: row.activity_journal,
+    history_mode: row.history_mode,
     updated_at: row.updated_at,
   };
 }
@@ -257,7 +258,7 @@ registerResource({
       access: 'approval',
       description:
         'Update container config scalar fields. Changes are saved but do NOT take effect until you run `ncl groups restart`. ' +
-        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --activity-journal.',
+        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --activity-journal, --history-mode.',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -275,6 +276,7 @@ registerResource({
             | 'max_messages_per_prompt'
             | 'cli_scope'
             | 'activity_journal'
+            | 'history_mode'
           >
         > = {};
         if (args.provider !== undefined) updates.provider = args.provider as string;
@@ -296,10 +298,15 @@ registerResource({
           if (!['on', 'off'].includes(journal)) throw new Error('--activity-journal must be one of: on, off');
           updates.activity_journal = journal;
         }
+        if (args['history-mode'] !== undefined || args.history_mode !== undefined) {
+          const mode = (args['history-mode'] ?? args.history_mode) as string;
+          if (!['push', 'pull'].includes(mode)) throw new Error('--history-mode must be one of: push, pull');
+          updates.history_mode = mode;
+        }
 
         if (Object.keys(updates).length === 0) {
           throw new Error(
-            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --activity-journal',
+            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --activity-journal, --history-mode',
           );
         }
 
