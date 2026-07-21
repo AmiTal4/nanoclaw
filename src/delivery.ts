@@ -32,6 +32,7 @@ import {
 import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from './delivery-guard.js';
 import { isUnguarded, type Unguarded } from './guard/index.js';
 import { log } from './log.js';
+import { shouldSuppressRepeat } from './repeat-suppressor.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles, writeSessionMessage } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
@@ -202,6 +203,18 @@ async function drainSession(session: Session): Promise<void> {
     migrateDeliveredTable(inDb);
 
     for (const msg of undelivered) {
+      if (msg.kind !== 'system') {
+        const text = extractText(msg.content);
+        if (text !== null && shouldSuppressRepeat(session.id, text)) {
+          log.warn('Suppressing repeated identical outbound message (flood cap)', {
+            messageId: msg.id,
+            sessionId: session.id,
+            preview: text.slice(0, 80),
+          });
+          markDelivered(inDb, msg.id, null);
+          continue;
+        }
+      }
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         markDelivered(inDb, msg.id, platformMsgId ?? null);
@@ -242,6 +255,15 @@ async function drainSession(session: Session): Promise<void> {
   } finally {
     outDb.close();
     inDb.close();
+  }
+}
+
+function extractText(content: string): string | null {
+  try {
+    const parsed = JSON.parse(content);
+    return typeof parsed?.text === 'string' ? parsed.text : null;
+  } catch {
+    return null;
   }
 }
 

@@ -25,6 +25,7 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
+import { ErrorGate } from './error-throttle.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 
 const POLL_INTERVAL_MS = 1000;
@@ -123,8 +124,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
   let pollCount = 0;
   let isFirstPoll = true;
+  const errorGate = new ErrorGate();
+  let loggedPause = false;
   while (true) {
     if (config.signal?.aborted) return;
+    if (errorGate.isPaused()) {
+      if (!loggedPause) {
+        log(`Provider limit hit — pausing turns for ${Math.round(errorGate.pauseRemainingMs() / 60_000)} min`);
+        loggedPause = true;
+      }
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    loggedPause = false;
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
     const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
@@ -258,6 +270,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         config.provider.onExchangeComplete?.bind(config.provider),
         prompt,
         continuation,
+        errorGate,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -276,15 +289,21 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         clearContinuation(config.providerName);
       }
 
-      // Write error response so the user knows something went wrong
-      writeMessageOut({
-        id: generateId(),
-        kind: 'chat',
-        platform_id: routing.platformId,
-        channel_type: routing.channelType,
-        thread_id: routing.threadId,
-        content: JSON.stringify({ text: `Error: ${errMsg}` }),
-      });
+      const verdict = errorGate.handle(errMsg);
+      if (routing.channelType === 'agent') {
+        log('Suppressing error post to a2a destination');
+      } else if (!verdict.post) {
+        log('Suppressing repeated error post');
+      } else {
+        writeMessageOut({
+          id: generateId(),
+          kind: 'chat',
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+          content: JSON.stringify({ text: `Error: ${errMsg}` }),
+        });
+      }
 
       // The batch is still acked completed below (no redelivery). Without
       // this line the only log trace of the errored turn is "Query error"
@@ -347,6 +366,7 @@ export async function processQuery(
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
   initialPrompt: string,
   initialContinuation: string | undefined,
+  errorGate: ErrorGate = new ErrorGate(),
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -406,6 +426,7 @@ export async function processQuery(
         // host-generated welcome trigger with null thread vs a Discord DM reply).
         const newMessages = pending.filter((m) => m.kind !== 'system');
         if (newMessages.length === 0) return;
+        if (!newMessages.some((m) => m.trigger === 1)) return;
 
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);
@@ -515,7 +536,19 @@ export async function processQuery(
             // <message> envelope: deliver the notice instead of dropping it as
             // scratchpad, and skip the re-wrap nudge — it would just re-hammer
             // the failing gateway turn after turn.
-            deliverErrorResult(event.text, routing);
+            const verdict = errorGate.handle(event.text);
+            if (routing.channelType === 'agent') {
+              log('Suppressing error result to a2a destination');
+            } else if (!verdict.post) {
+              log('Suppressing repeated error result');
+            } else {
+              deliverErrorResult(event.text, routing);
+            }
+            if (verdict.limit) {
+              log('Limit-class error result — aborting stream until reset');
+              endedForCommand = true;
+              query.abort();
+            }
             notifyExchangeComplete(onExchangeComplete, {
               prompt: archivePrompts[0] ?? initialPrompt,
               result: event.text,
