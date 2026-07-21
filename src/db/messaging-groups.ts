@@ -61,6 +61,16 @@ export function getMessagingGroupByPlatform(
     .get(channelType, platformId) as MessagingGroup | undefined;
 }
 
+export function getMessagingGroupsByPlatform(channelType: string, platformId: string): MessagingGroup[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM messaging_groups
+        WHERE channel_type = ? AND platform_id = ?
+     ORDER BY (instance = channel_type) DESC, instance ASC`,
+    )
+    .all(channelType, platformId) as MessagingGroup[];
+}
+
 /**
  * Combined lookup for the router's fast-drop path. Returns the messaging
  * group (if it exists) and a count of wired agents in one query — lets

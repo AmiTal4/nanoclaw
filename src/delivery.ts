@@ -14,13 +14,14 @@ import {
   getRunningSessions,
   getActiveSessions,
   createPendingQuestion,
+  findSessionForAgent,
   isTaskThread,
   TASKS_SYSTEM_THREAD_ID,
 } from './db/sessions.js';
 import { appendRunLog } from './modules/scheduling/run-log.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
-import { getMessagingGroup, getMessagingGroupByPlatform } from './db/messaging-groups.js';
+import { getMessagingGroup, getMessagingGroupsByPlatform } from './db/messaging-groups.js';
 import {
   getDueOutboundMessages,
   getDeliveredIds,
@@ -32,7 +33,7 @@ import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from 
 import { isUnguarded, type Unguarded } from './guard/index.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
-import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
+import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles, writeSessionMessage } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
 import type { OutboundFile } from './channels/adapter.js';
 import type { MessagingGroup, PendingApproval, Session } from './types.js';
@@ -326,10 +327,19 @@ async function deliverMessage(
     // reply goes out through the instance the message came in on. Otherwise
     // fall back to the by-platform lookup (default-instance-first).
     const originMg = session.messaging_group_id ? getMessagingGroup(session.messaging_group_id) : undefined;
-    const mg =
-      originMg && originMg.channel_type === msg.channel_type && originMg.platform_id === msg.platform_id
-        ? originMg
-        : getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
+    let mg: MessagingGroup | undefined;
+    if (originMg && originMg.channel_type === msg.channel_type && originMg.platform_id === msg.platform_id) {
+      mg = originMg;
+    } else {
+      const candidates = getMessagingGroupsByPlatform(msg.channel_type, msg.platform_id);
+      mg = candidates[0];
+      if (candidates.length > 1 && hasTable(getDb(), 'agent_destinations')) {
+        const stmt = getDb().prepare(
+          'SELECT 1 FROM agent_destinations WHERE agent_group_id = ? AND target_type = ? AND target_id = ? LIMIT 1',
+        );
+        mg = candidates.find((candidate) => stmt.get(session.agent_group_id, 'channel', candidate.id)) ?? mg;
+      }
+    }
     if (!mg) {
       throw new Error(`unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`);
     }
@@ -425,7 +435,60 @@ async function deliverMessage(
     );
   }
 
+  if (targetMg) {
+    try {
+      mirrorToWiredSession(msg, session, targetMg, content);
+    } catch (err) {
+      log.warn('Failed to mirror outbound message to wired session', { id: msg.id, err });
+    }
+  }
+
   return platformMsgId;
+}
+
+function outboundMirrorText(content: Record<string, unknown>): string | null {
+  const op = content.operation as string | undefined;
+  if (op === 'edit' || op === 'reaction') return null;
+  if (op === 'poll') {
+    const values = Array.isArray(content.values) ? content.values.join(' / ') : '';
+    return `[poll] ${String(content.name ?? '')}${values ? ` — ${values}` : ''}`;
+  }
+  if (op === 'event') return `[event] ${String(content.name ?? '')} at ${String(content.startTime ?? '')}`;
+  if (op === 'contact') return `[contact] ${String(content.displayName ?? '')}`;
+  const text = typeof content.text === 'string' ? content.text : '';
+  const files = Array.isArray(content.files) ? (content.files as string[]) : [];
+  return [text, ...files.map((file) => `[file: ${file}]`)].filter(Boolean).join(' ') || null;
+}
+
+function mirrorToWiredSession(
+  msg: { id: string; kind: string; thread_id: string | null },
+  session: Session,
+  mg: MessagingGroup,
+  content: Record<string, unknown>,
+): void {
+  if (mg.id === session.messaging_group_id || msg.kind !== 'chat') return;
+  const target = findSessionForAgent(session.agent_group_id, mg.id, msg.thread_id);
+  if (!target || target.id === session.id) return;
+  const text = outboundMirrorText(content);
+  if (!text) return;
+  const agentName = getAgentGroup(session.agent_group_id)?.name ?? session.agent_group_id;
+  writeSessionMessage(session.agent_group_id, target.id, {
+    id: `mirror-${msg.id}`,
+    kind: 'chat',
+    timestamp: new Date().toISOString(),
+    platformId: mg.platform_id,
+    channelType: mg.channel_type,
+    threadId: msg.thread_id,
+    content: JSON.stringify({ text, sender: agentName, origin: 'self-mirror' }),
+    trigger: 0,
+    sourceSessionId: session.id,
+  });
+  log.info('Mirrored cross-session outbound into wired session', {
+    id: msg.id,
+    fromSession: session.id,
+    toSession: target.id,
+    messagingGroupId: mg.id,
+  });
 }
 
 /**

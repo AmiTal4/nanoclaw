@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { findByName, getAllDestinations } from '../destinations.js';
+import { getMessageInBySeq } from '../db/messages-in.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getCurrentInReplyTo } from '../db/session-state.js';
 import { getSessionRouting } from '../db/session-routing.js';
@@ -48,15 +49,54 @@ function destinationList(): string {
  */
 function resolveRouting(
   to: string,
+  thread?: string,
 ): { channel_type: string; platform_id: string; thread_id: string | null; resolvedName: string } | { error: string } {
   const dest = findByName(to);
   if (!dest) return { error: `Unknown destination "${to}". Known: ${destinationList()}` };
   if (dest.type === 'channel') {
+    if (thread && thread !== 'new') {
+      const seq = Number(thread);
+      if (!Number.isInteger(seq) || seq <= 0) return { error: `thread must be "new" or a numeric message id` };
+      const row = getMessageInBySeq(seq);
+      if (!row || !row.channel_type || !row.platform_id || row.channel_type === 'agent') {
+        return { error: `Message #${seq} not found or has no channel routing` };
+      }
+      if (row.channel_type !== dest.channelType || row.platform_id !== dest.platformId) {
+        return { error: `Destination "${to}" is not the channel message #${seq} came from` };
+      }
+      if (row.thread_id) {
+        return {
+          channel_type: row.channel_type,
+          platform_id: row.platform_id,
+          thread_id: row.thread_id,
+          resolvedName: to,
+        };
+      }
+      let platformMessageId: string | undefined;
+      try {
+        platformMessageId = JSON.parse(row.content).id;
+      } catch {
+        platformMessageId = undefined;
+      }
+      if (row.channel_type === 'slack' && platformMessageId) {
+        return {
+          channel_type: row.channel_type,
+          platform_id: row.platform_id,
+          thread_id: `${row.platform_id}:${platformMessageId}`,
+          resolvedName: to,
+        };
+      }
+      return { error: `Message #${seq} is not in a thread and cannot root one on this channel` };
+    }
     // If the destination is the same channel the session is bound to,
     // preserve the thread_id so replies land in the correct thread.
     const session = getSessionRouting();
     const threadId =
-      session.channel_type === dest.channelType && session.platform_id === dest.platformId ? session.thread_id : null;
+      thread === 'new'
+        ? null
+        : session.channel_type === dest.channelType && session.platform_id === dest.platformId
+          ? session.thread_id
+          : null;
     return {
       channel_type: dest.channelType!,
       platform_id: dest.platformId!,
@@ -66,6 +106,12 @@ function resolveRouting(
   }
   return { channel_type: 'agent', platform_id: dest.agentGroupId!, thread_id: null, resolvedName: to };
 }
+
+const threadParamSchema = {
+  type: 'string',
+  description:
+    'Omit to preserve the current thread; "new" for a top-level post; or provide a numeric inbound message id to target that message thread.',
+};
 
 export const sendMessage: McpToolDefinition = {
   tool: {
@@ -79,6 +125,7 @@ export const sendMessage: McpToolDefinition = {
           description: 'Destination name (e.g., "family", "worker-1").',
         },
         text: { type: 'string', description: 'Message content' },
+        thread: threadParamSchema,
       },
       required: ['to', 'text'],
     },
@@ -89,7 +136,7 @@ export const sendMessage: McpToolDefinition = {
     if (!to) return err(`to is required. Options: ${destinationList()}`);
     if (!text) return err('text is required');
 
-    const routing = resolveRouting(to);
+    const routing = resolveRouting(to, args.thread as string | undefined);
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
@@ -119,6 +166,7 @@ export const sendFile: McpToolDefinition = {
         path: { type: 'string', description: 'File path (relative to /workspace/agent/ or absolute)' },
         text: { type: 'string', description: 'Optional accompanying message' },
         filename: { type: 'string', description: 'Display name (default: basename of path)' },
+        thread: threadParamSchema,
       },
       required: ['to', 'path'],
     },
@@ -129,7 +177,7 @@ export const sendFile: McpToolDefinition = {
     if (!to) return err(`to is required. Options: ${destinationList()}`);
     if (!filePath) return err('path is required');
 
-    const routing = resolveRouting(to);
+    const routing = resolveRouting(to, args.thread as string | undefined);
     if ('error' in routing) return err(routing.error);
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
@@ -258,6 +306,7 @@ export const sendPoll: McpToolDefinition = {
           type: 'boolean',
           description: 'Allow voters to pick more than one option (default false = single choice).',
         },
+        thread: threadParamSchema,
       },
       required: ['to', 'name', 'options'],
     },
@@ -274,7 +323,7 @@ export const sendPoll: McpToolDefinition = {
     if (values.length < 2) return err('at least 2 non-empty options are required');
     const allowMultiple = args.allowMultipleAnswers === true;
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string, args.thread as string | undefined);
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
@@ -320,6 +369,7 @@ export const sendEvent: McpToolDefinition = {
           enum: ['audio', 'video'],
           description: 'Optionally attach a WhatsApp call link of this type.',
         },
+        thread: threadParamSchema,
       },
       required: ['to', 'name', 'startTime'],
     },
@@ -345,7 +395,7 @@ export const sendEvent: McpToolDefinition = {
       return err('call must be "audio" or "video"');
     }
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string, args.thread as string | undefined);
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
@@ -405,6 +455,7 @@ export const sendContact: McpToolDefinition = {
         },
         org: { type: 'string', description: 'Optional organization / company.' },
         email: { type: 'string', description: 'Optional email address.' },
+        thread: threadParamSchema,
       },
       required: ['to', 'name', 'phone'],
     },
@@ -419,7 +470,7 @@ export const sendContact: McpToolDefinition = {
     const phones = [phone, ...extra].map((p) => p.trim()).filter(Boolean);
     if (phones.length === 0) return err('at least one phone number is required');
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string, args.thread as string | undefined);
     if ('error' in routing) return err(routing.error);
 
     const vcard = buildVCard({

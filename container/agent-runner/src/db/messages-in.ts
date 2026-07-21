@@ -40,6 +40,15 @@ export interface MessageInRow {
   content: string;
 }
 
+export function getMessageInBySeq(seq: number): MessageInRow | undefined {
+  const inbound = openInboundDb();
+  try {
+    return inbound.prepare('SELECT * FROM messages_in WHERE seq = ?').get(seq) as MessageInRow | undefined;
+  } finally {
+    inbound.close();
+  }
+}
+
 // Cap on how many messages reach the agent in one prompt. Read from
 // container.json; falls back to 10.
 function getMaxMessagesPerPrompt(): number {
@@ -134,16 +143,15 @@ export function markScriptSkipped(skips: Array<{ id: string; reason: string }>):
     'INSERT OR REPLACE INTO processing_ack (message_id, status, status_changed) VALUES (?, ?, ?)',
   );
   db.transaction(() => {
-    for (const s of skips) stmt.run(s.id, s.reason === 'error' ? 'script-skip:error' : 'completed', new Date().toISOString());
+    for (const s of skips)
+      stmt.run(s.id, s.reason === 'error' ? 'script-skip:error' : 'completed', new Date().toISOString());
   })();
 }
 
 /** Mark a single message as failed — writes to processing_ack in outbound.db. */
 export function markFailed(id: string): void {
   getOutboundDb()
-    .prepare(
-      "INSERT OR REPLACE INTO processing_ack (message_id, status, status_changed) VALUES (?, 'failed', ?)",
-    )
+    .prepare("INSERT OR REPLACE INTO processing_ack (message_id, status, status_changed) VALUES (?, 'failed', ?)")
     .run(id, new Date().toISOString());
 }
 
