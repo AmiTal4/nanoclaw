@@ -31,7 +31,6 @@
  */
 import { describe, it, expect } from 'vitest';
 
-
 import { getRegisteredChannelNames } from './channel-registry.js';
 import './index.js'; // the real barrel — triggers every channel's self-registration
 
@@ -39,5 +38,4 @@ describe('whatsapp-cloud channel registration', () => {
   it('registers whatsapp-cloud via the channel barrel', () => {
     expect(getRegisteredChannelNames()).toContain('whatsapp-cloud');
   });
-
 });

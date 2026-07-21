@@ -14,7 +14,14 @@ const SCALAR_COLUMNS = new Set([
   'history_mode',
   'block_local_web_fetch',
 ]);
-const JSON_COLUMNS = new Set(['skills', 'mcp_servers', 'packages_apt', 'packages_npm', 'additional_mounts', 'disabled_tools']);
+const JSON_COLUMNS = new Set([
+  'skills',
+  'mcp_servers',
+  'packages_apt',
+  'packages_npm',
+  'additional_mounts',
+  'disabled_tools',
+]);
 
 export function getContainerConfig(agentGroupId: string): ContainerConfigRow | undefined {
   return getDb().prepare('SELECT * FROM container_configs WHERE agent_group_id = ?').get(agentGroupId) as
