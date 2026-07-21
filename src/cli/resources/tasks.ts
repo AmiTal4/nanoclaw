@@ -2,6 +2,7 @@ import fs from 'fs';
 
 import type Database from 'better-sqlite3';
 
+import { journalTask } from '../../activity-journal.js';
 import { GROUPS_DIR } from '../../config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import {
@@ -189,6 +190,7 @@ function createTask(args: Record<string, unknown>, ctx: CallerContext) {
   const { session, row } = createScheduledTask(group, prepared, {
     originSessionId: ctx.caller === 'agent' ? ctx.sessionId : null,
   });
+  journalTask(group, session.id, 'scheduled', row.series_id ?? row.row_id, `next=${row.process_after}`);
   return toOutput(session, row);
 }
 
@@ -316,11 +318,14 @@ function mutateTask(
   args: Record<string, unknown>,
   ctx: CallerContext,
   fn: (db: Database.Database, id: string) => number,
+  journalVerb?: 'cancelled' | 'paused' | 'resumed',
 ) {
   const id = taskId(args);
   let touched = 0;
   for (const session of selectedSessions(args, ctx)) {
-    touched += withInbound(session, (db) => fn(db, id)) ?? 0;
+    const changed = withInbound(session, (db) => fn(db, id)) ?? 0;
+    touched += changed;
+    if (changed > 0 && journalVerb) journalTask(session.agent_group_id, session.id, journalVerb, id);
   }
   if (touched === 0) throw new Error(`no live task matched: ${id}`);
   return { series_id: id, touched };
@@ -356,7 +361,9 @@ function updateTaskCommand(args: Record<string, unknown>, ctx: CallerContext) {
 
   let touched = 0;
   for (const session of selectedSessions(args, ctx)) {
-    touched += withInbound(session, (db) => updateTask(db, id, update)) ?? 0;
+    const changed = withInbound(session, (db) => updateTask(db, id, update)) ?? 0;
+    touched += changed;
+    if (changed > 0) journalTask(session.agent_group_id, session.id, 'updated', id, `fields=${fields.join(',')}`);
   }
   if (touched === 0) throw new Error(`no live task matched: ${id}`);
   return { series_id: id, touched, fields };
@@ -364,12 +371,14 @@ function updateTaskCommand(args: Record<string, unknown>, ctx: CallerContext) {
 
 function cancelTaskCommand(args: Record<string, unknown>, ctx: CallerContext) {
   if (!bool(args.all)) {
-    return mutateTask(args, ctx, cancelTask);
+    return mutateTask(args, ctx, cancelTask, 'cancelled');
   }
 
   let touched = 0;
   for (const session of selectedSessions(args, ctx)) {
-    touched += withInbound(session, cancelAllTasks) ?? 0;
+    const changed = withInbound(session, cancelAllTasks) ?? 0;
+    touched += changed;
+    if (changed > 0) journalTask(session.agent_group_id, session.id, 'cancelled', 'all', `count=${changed}`);
   }
   return { cancelled: touched };
 }
@@ -627,7 +636,7 @@ registerResource({
         },
         { name: 'session', type: 'string', description: 'Limit to one task session id.' },
       ],
-      handler: async (args, ctx) => mutateTask(args, ctx, pauseTask),
+      handler: async (args, ctx) => mutateTask(args, ctx, pauseTask, 'paused'),
     },
     resume: {
       access: 'open',
@@ -641,7 +650,7 @@ registerResource({
         },
         { name: 'session', type: 'string', description: 'Limit to one task session id.' },
       ],
-      handler: async (args, ctx) => mutateTask(args, ctx, resumeTask),
+      handler: async (args, ctx) => mutateTask(args, ctx, resumeTask, 'resumed'),
     },
     delete: {
       access: 'open',

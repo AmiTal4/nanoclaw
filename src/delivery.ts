@@ -9,6 +9,7 @@
  */
 import type Database from 'better-sqlite3';
 
+import { journalMessageOut } from './activity-journal.js';
 import {
   getRunningSessions,
   getActiveSessions,
@@ -34,7 +35,7 @@ import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
 import type { OutboundFile } from './channels/adapter.js';
-import type { PendingApproval, Session } from './types.js';
+import type { MessagingGroup, PendingApproval, Session } from './types.js';
 
 const ACTIVE_POLL_MS = 1000;
 const SWEEP_POLL_MS = 60_000;
@@ -317,6 +318,7 @@ async function deliverMessage(
   // (instead of marking it delivered when nothing was actually delivered,
   // which was the pre-refactor bug).
   let deliverInstance: string | undefined;
+  let targetMg: MessagingGroup | undefined;
   if (msg.channel_type && msg.platform_id) {
     // Resolve the messaging group ORIGIN-SESSION-FIRST: when the message
     // targets the session's own chat address, the origin row wins even if
@@ -349,6 +351,7 @@ async function deliverMessage(
       }
     }
     deliverInstance = mg.instance;
+    targetMg = mg;
   }
 
   // Track pending questions for ask_user_question flow.
@@ -412,6 +415,15 @@ async function deliverMessage(
   });
 
   clearOutbox(session.agent_group_id, session.id, msg.id);
+
+  if (msg.kind === 'chat') {
+    journalMessageOut(
+      session.agent_group_id,
+      session.id,
+      { channelType: msg.channel_type, platformId: msg.platform_id, name: targetMg?.name },
+      msg.content,
+    );
+  }
 
   return platformMsgId;
 }

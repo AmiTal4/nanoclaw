@@ -14,6 +14,7 @@ import type Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
+import { journalMessageIn } from './activity-journal.js';
 import { deriveAttachmentName } from './attachment-naming.js';
 import { isSafeAttachmentName } from './attachment-safety.js';
 import type { OutboundFile } from './channels/adapter.js';
@@ -271,6 +272,16 @@ export function writeSessionMessage(
     });
   } finally {
     db.close();
+  }
+
+  if (message.kind === 'chat' && !message.id.startsWith('mirror-')) {
+    journalMessageIn(agentGroupId, sessionId, {
+      channelType: message.channelType,
+      platformId: message.platformId,
+      content,
+      trigger: message.trigger ?? 1,
+      sourceSessionId: message.sourceSessionId,
+    });
   }
 
   updateSession(sessionId, { last_active: new Date().toISOString() });

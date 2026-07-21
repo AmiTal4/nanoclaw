@@ -76,6 +76,10 @@ export async function dispatch(
     const cliScope = configRow?.cli_scope ?? 'group';
 
     if (cliScope === 'group') {
+      if (req.args.activity_journal !== undefined || req.args['activity-journal'] !== undefined) {
+        return err(req.id, 'forbidden', 'Cannot change activity_journal from a group-scoped agent.');
+      }
+
       // Auto-fill agent-group-related args so the agent doesn't need
       // to pass its own group ID explicitly.
       const fill: Record<string, unknown> = {
