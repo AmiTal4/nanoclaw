@@ -168,7 +168,7 @@ export function buildWhatsAppContactPayload(
   return { contacts: { displayName, contacts: [{ displayName, vcard }] } };
 }
 
-export function decryptPollVoteWithJidCandidates<T>(args: {
+export function decryptPollVoteWithJidCandidates<T = ReturnType<typeof decryptPollVote>>(args: {
   vote: Parameters<typeof decryptPollVote>[0];
   pollEncKey: Uint8Array;
   pollMsgId: string;
@@ -176,7 +176,7 @@ export function decryptPollVoteWithJidCandidates<T>(args: {
   creatorCandidates: string[];
   decrypt?: (vote: Parameters<typeof decryptPollVote>[0], options: Parameters<typeof decryptPollVote>[1]) => T;
 }): { vote: T; voterJid: string; creatorJid: string } | undefined {
-  const decrypt = args.decrypt ?? (decryptPollVote as typeof args.decrypt);
+  const decrypt = args.decrypt ?? (decryptPollVote as unknown as NonNullable<typeof args.decrypt>);
   for (const creatorJid of args.creatorCandidates) {
     for (const voterJid of args.voterCandidates) {
       try {
