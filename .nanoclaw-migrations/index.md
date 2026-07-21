@@ -114,6 +114,8 @@ Validation results:
   disabled tools remain configured and local/private WebFetch blocking is on.
 
 The Codex-provider stash remains stored and was not restored, per operator
-instruction. No provider switch occurred, so `/migrate-memory` was neither
-needed nor run. Live data, group workspaces, credentials, and memory were not
-rewritten during candidate construction.
+instruction. After promotion, the single live group still configured for the
+deferred Codex provider (`Edna`) was returned to the built-in Claude provider
+and its Codex-specific model override was cleared. Shared memory was preserved;
+`/migrate-memory` was neither needed nor run. Group workspaces and credentials
+were not rewritten during candidate construction.
