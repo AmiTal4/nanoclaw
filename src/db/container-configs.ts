@@ -12,8 +12,9 @@ const SCALAR_COLUMNS = new Set([
   'cli_scope',
   'activity_journal',
   'history_mode',
+  'block_local_web_fetch',
 ]);
-const JSON_COLUMNS = new Set(['skills', 'mcp_servers', 'packages_apt', 'packages_npm', 'additional_mounts']);
+const JSON_COLUMNS = new Set(['skills', 'mcp_servers', 'packages_apt', 'packages_npm', 'additional_mounts', 'disabled_tools']);
 
 export function getContainerConfig(agentGroupId: string): ContainerConfigRow | undefined {
   return getDb().prepare('SELECT * FROM container_configs WHERE agent_group_id = ?').get(agentGroupId) as
@@ -89,6 +90,7 @@ export function updateContainerConfigScalars(
       | 'cli_scope'
       | 'activity_journal'
       | 'history_mode'
+      | 'block_local_web_fetch'
     >
   >,
 ): void {
@@ -115,7 +117,7 @@ export function updateContainerConfigScalars(
 /** Overwrite a JSON column wholesale. Used for skills, mcp_servers, packages_*, additional_mounts. */
 export function updateContainerConfigJson(
   agentGroupId: string,
-  column: 'skills' | 'mcp_servers' | 'packages_apt' | 'packages_npm' | 'additional_mounts',
+  column: 'skills' | 'mcp_servers' | 'packages_apt' | 'packages_npm' | 'additional_mounts' | 'disabled_tools',
   value: unknown,
 ): void {
   if (!JSON_COLUMNS.has(column)) throw new Error(`Invalid JSON column: ${column}`);

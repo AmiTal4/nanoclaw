@@ -27,6 +27,8 @@ export interface ContainerConfigRow {
   cli_scope: string; // 'disabled' | 'group' | 'global'
   activity_journal: string; // 'on' | 'off' — host-written activity-log.md
   history_mode: string; // 'push' | 'pull' — accumulated context delivery mode
+  disabled_tools: string; // JSON: provider tool names denied for this group
+  block_local_web_fetch: number; // 1 blocks WebFetch to local/private addresses
   updated_at: string;
 }
 

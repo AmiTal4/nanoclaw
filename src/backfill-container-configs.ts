@@ -24,6 +24,8 @@ interface LegacyContainerJson {
   provider?: string;
   assistantName?: string;
   maxMessagesPerPrompt?: number;
+  disabledTools?: string[];
+  blockLocalWebFetch?: boolean;
 }
 
 export function backfillContainerConfigs(): void {
@@ -67,6 +69,8 @@ export function backfillContainerConfigs(): void {
       cli_scope: 'group',
       activity_journal: 'on',
       history_mode: 'push',
+      disabled_tools: JSON.stringify(legacy.disabledTools ?? []),
+      block_local_web_fetch: legacy.blockLocalWebFetch === true ? 1 : 0,
       updated_at: new Date().toISOString(),
     };
 

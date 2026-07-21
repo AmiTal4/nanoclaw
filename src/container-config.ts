@@ -44,6 +44,8 @@ export interface ContainerConfig {
   model?: string;
   effort?: string;
   historyMode?: 'push' | 'pull';
+  disabledTools?: string[];
+  blockLocalWebFetch?: boolean;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -65,6 +67,8 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     historyMode: row.history_mode === 'pull' ? 'pull' : undefined,
+    disabledTools: JSON.parse(row.disabled_tools) as string[],
+    blockLocalWebFetch: row.block_local_web_fetch === 1,
   };
 }
 

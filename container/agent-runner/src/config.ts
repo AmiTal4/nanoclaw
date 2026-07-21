@@ -19,6 +19,8 @@ export interface RunnerConfig {
   model?: string;
   effort?: string;
   historyMode: 'push' | 'pull';
+  disabledTools: string[];
+  blockLocalWebFetch: boolean;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -49,6 +51,8 @@ export function loadConfig(): RunnerConfig {
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
     historyMode: raw.historyMode === 'pull' ? 'pull' : 'push',
+    disabledTools: Array.isArray(raw.disabledTools) ? (raw.disabledTools as string[]) : [],
+    blockLocalWebFetch: raw.blockLocalWebFetch === true,
   };
 
   return _config;
@@ -63,6 +67,8 @@ export function setConfigForTest(overrides: Partial<RunnerConfig>): void {
     maxMessagesPerPrompt: DEFAULT_MAX_MESSAGES,
     mcpServers: {},
     historyMode: 'push',
+    disabledTools: [],
+    blockLocalWebFetch: false,
     ...overrides,
   };
 }

@@ -1,4 +1,6 @@
 import fs from 'fs';
+import dns from 'dns/promises';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 
@@ -118,6 +120,33 @@ const TOOL_ALLOWLIST = [
   'Skill',
   'NotebookEdit',
 ];
+
+function isPrivateIp(address: string): boolean {
+  const normalized = address.toLowerCase().replace(/^::ffff:/, '');
+  if (net.isIPv4(normalized)) {
+    const [a, b] = normalized.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+  }
+  if (!net.isIPv6(normalized)) return true;
+  return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') ||
+    normalized.startsWith('fd') || /^fe[89ab]/.test(normalized);
+}
+
+/** Resolve before allowing WebFetch so hostnames cannot trivially hide private targets. */
+export async function isLocalOrPrivateUrl(urlText: string): Promise<boolean> {
+  try {
+    const url = new URL(urlText);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return true;
+    const hostname = url.hostname.replace(/^\[|\]$/g, '');
+    if (hostname.toLowerCase() === 'localhost' || hostname.toLowerCase() === 'host.docker.internal') return true;
+    if (net.isIP(hostname)) return isPrivateIp(hostname);
+    const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    return addresses.length === 0 || addresses.some(({ address }) => isPrivateIp(address));
+  } catch {
+    return true;
+  }
+}
 
 // MCP server names are sanitized by the SDK when forming tool prefixes:
 // any character outside [A-Za-z0-9_-] becomes '_'. Mirror that here so our
@@ -462,6 +491,8 @@ export class ClaudeProvider implements AgentProvider {
   private additionalDirectories?: string[];
   private model?: string;
   private effort?: string;
+  private disabledTools: Set<string>;
+  private blockLocalWebFetch: boolean;
   private memorySessionHook?: MemorySessionHookRegistration;
 
   constructor(options: ProviderOptions = {}) {
@@ -470,6 +501,8 @@ export class ClaudeProvider implements AgentProvider {
     this.additionalDirectories = options.additionalDirectories;
     this.model = options.model;
     this.effort = options.effort;
+    this.disabledTools = new Set(options.disabledTools ?? []);
+    this.blockLocalWebFetch = options.blockLocalWebFetch ?? false;
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -529,6 +562,20 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    const allowedTools = TOOL_ALLOWLIST.filter((tool) => !this.disabledTools.has(tool));
+    const localFetchHook: HookCallback = async (hookInput) => {
+      const call = hookInput as { tool_name?: string; tool_input?: Record<string, unknown> };
+      const url = call.tool_input?.url;
+      if (call.tool_name === 'WebFetch' && typeof url === 'string' && await isLocalOrPrivateUrl(url)) {
+        return {
+          decision: 'block',
+          stopReason: 'WebFetch to local/private network addresses is not allowed in this environment.',
+        } as unknown as ReturnType<HookCallback>;
+      }
+      return { continue: true };
+    };
+    const preToolUseHooks = this.blockLocalWebFetch ? [localFetchHook, preToolUseHook] : [preToolUseHook];
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
@@ -539,7 +586,7 @@ export class ClaudeProvider implements AgentProvider {
         systemPrompt: instructions
           ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions }
           : undefined,
-        allowedTools: [...TOOL_ALLOWLIST, ...Object.keys(this.mcpServers).map(mcpAllowPattern)],
+        allowedTools: [...allowedTools, ...Object.keys(this.mcpServers).map(mcpAllowPattern)],
         disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
         model: this.model,
@@ -550,7 +597,7 @@ export class ClaudeProvider implements AgentProvider {
         settingSources: ['project', 'user', 'local'],
         mcpServers: this.mcpServers,
         hooks: {
-          PreToolUse: [{ hooks: [preToolUseHook] }],
+          PreToolUse: [{ hooks: preToolUseHooks }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],

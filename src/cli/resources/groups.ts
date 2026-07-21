@@ -35,6 +35,8 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     cli_scope: row.cli_scope,
     activity_journal: row.activity_journal,
     history_mode: row.history_mode,
+    disabled_tools: JSON.parse(row.disabled_tools),
+    block_local_web_fetch: row.block_local_web_fetch === 1,
     updated_at: row.updated_at,
   };
 }
