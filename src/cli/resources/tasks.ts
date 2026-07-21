@@ -37,6 +37,7 @@ import { registerResource } from '../crud.js';
 import { appendRunLog } from '../../modules/scheduling/run-log.js';
 import { formatTasksTable } from '../format-tasks.js';
 import type { CallerContext } from '../frame.js';
+import { truncateCodePoints } from '../text.js';
 
 type TaskStatus = 'pending' | 'paused';
 
@@ -131,7 +132,7 @@ function toOutput(session: ScopedSession, row: TaskRow) {
     status: row.status,
     process_after: row.process_after,
     recurrence: row.recurrence,
-    prompt: content.prompt.length > 120 ? content.prompt.slice(0, 117) + '...' : content.prompt,
+    prompt: truncateCodePoints(content.prompt, 120, '...'),
     has_script: content.script ? 1 : 0,
     origin_session_id: content.originSessionId, // which session created the task (null for CLI-created)
     created_at: row.timestamp,

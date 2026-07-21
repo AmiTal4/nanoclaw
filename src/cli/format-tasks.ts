@@ -1,3 +1,5 @@
+import { truncateCodePoints } from './text.js';
+
 /**
  * Compact aligned-table renderer for `ncl tasks list` (human mode only).
  *
@@ -58,7 +60,7 @@ function age(iso: string | null | undefined, now: number): string {
 
 function clip(s: string | null | undefined, n: number): string {
   const v = (s ?? '').replace(/\s+/g, ' ').trim();
-  return v.length > n ? v.slice(0, n - 1) + '…' : v;
+  return truncateCodePoints(v, n, '…');
 }
 
 export function formatTasksTable(rows: TaskListRow[], now: number = Date.now()): string {

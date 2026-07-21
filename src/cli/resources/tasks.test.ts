@@ -131,6 +131,25 @@ describe('tasks CLI resource', () => {
     expect(resp.human).toContain('briefing-');
   });
 
+  it('does not split an emoji at the raw task-preview boundary', async () => {
+    const prompt = 'a'.repeat(116) + '🚀' + 'tail';
+    await dispatch(
+      {
+        id: 'unicode-create',
+        command: 'tasks-create',
+        args: { prompt, name: 'unicode', process_after: '2999-01-01T00:00:00Z' },
+      },
+      agentCtx(),
+    );
+
+    const resp = await dispatch({ id: 'unicode-list', command: 'tasks-list', args: {} }, agentCtx());
+    expect(resp.ok).toBe(true);
+    if (!resp.ok) return;
+    const row = (resp.data as Array<{ prompt: string }>)[0];
+    expect(row.prompt).toBe('a'.repeat(116) + '🚀...');
+    expect(JSON.stringify(row)).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
   it('recurrence more frequent than 4x/day is refused with the quota warning', async () => {
     const resp = await dispatch(
       { id: 'c', command: 'tasks-create', args: { prompt: 'x', name: 'spam', recurrence: '*/2 * * * *' } },
@@ -551,6 +570,12 @@ describe('formatTasksTable', () => {
     expect(oneShot).toContain('once');
     expect(oneShot).toMatch(/\bdue\b/); // next_run in the past → due
     expect(oneShot).toContain('-'); // last_run '-' (never fired)
+  });
+
+  it('does not split an emoji at the aligned-table preview boundary', () => {
+    const output = formatTasksTable([{ series_id: 'task-unicode', prompt: 'a'.repeat(38) + '🚀' + 'tail' }], now);
+    expect(output).toContain('a'.repeat(38) + '🚀…');
+    expect(output).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 });
 
