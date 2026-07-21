@@ -15,6 +15,7 @@
  * refactor that breaks either part fails this suite.
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 
 import {
   computeIsMention,
@@ -22,6 +23,10 @@ import {
   parseWhatsAppMentions,
   extractQuotedContext,
   summarizeQuotedMessage,
+  buildWhatsAppPollPayload,
+  buildWhatsAppEventPayload,
+  buildWhatsAppContactPayload,
+  decryptPollVoteWithJidCandidates,
 } from './whatsapp.js';
 
 const BOT_PHONE_JID = '15550009999@s.whatsapp.net';
@@ -221,7 +226,11 @@ describe('extractQuotedContext (WhatsApp replies)', () => {
   it('uses a type placeholder when quoting a caption-less image', () => {
     const normalized = {
       extendedTextMessage: {
-        contextInfo: { stanzaId: 'IMG1', participant: '15551112222@s.whatsapp.net', quotedMessage: { imageMessage: {} } },
+        contextInfo: {
+          stanzaId: 'IMG1',
+          participant: '15551112222@s.whatsapp.net',
+          quotedMessage: { imageMessage: {} },
+        },
       },
     };
     expect(extractQuotedContext(normalized, opts)?.text).toBe('[image]');
@@ -236,5 +245,101 @@ describe('extractQuotedContext (WhatsApp replies)', () => {
     const out = summarizeQuotedMessage({ conversation: long });
     expect(out.length).toBe(300);
     expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('native WhatsApp outbound payloads', () => {
+  it('builds a Baileys rc13 native poll and preserves multi-select', () => {
+    expect(buildWhatsAppPollPayload('Lunch?', ['Tacos', 42], 2)).toEqual({
+      poll: { name: 'Lunch?', values: ['Tacos', '42'], selectableCount: 2 },
+    });
+  });
+
+  it('defaults invalid poll select counts to one', () => {
+    expect(buildWhatsAppPollPayload('Pick one', ['A', 'B'], 0).poll.selectableCount).toBe(1);
+  });
+
+  it('builds the Baileys event contract with dates, location, and call type', () => {
+    const payload = buildWhatsAppEventPayload({
+      name: 'Planning call',
+      startTime: '2026-08-01T10:00:00.000Z',
+      endTime: '2026-08-01T10:30:00.000Z',
+      description: 'Quarterly planning',
+      location: 'Room 7',
+      call: 'video',
+    });
+    expect(payload).toEqual({
+      event: {
+        name: 'Planning call',
+        startDate: new Date('2026-08-01T10:00:00.000Z'),
+        endDate: new Date('2026-08-01T10:30:00.000Z'),
+        description: 'Quarterly planning',
+        location: { name: 'Room 7' },
+        call: 'video',
+      },
+    });
+  });
+
+  it('builds a native contact card and supplies the fallback display name', () => {
+    const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nEND:VCARD';
+    expect(buildWhatsAppContactPayload(vcard)).toEqual({
+      contacts: {
+        displayName: 'Contact',
+        contacts: [{ displayName: 'Contact', vcard }],
+      },
+    });
+  });
+});
+
+describe('encrypted poll-vote JID compatibility', () => {
+  it('retries phone/LID creator and voter pairs until authentication succeeds', () => {
+    const attempts: string[] = [];
+    const result = decryptPollVoteWithJidCandidates({
+      vote: {} as never,
+      pollEncKey: new Uint8Array([1, 2, 3]),
+      pollMsgId: 'poll-123',
+      creatorCandidates: ['bot@s.whatsapp.net', 'bot@lid'],
+      voterCandidates: ['voter@lid', 'voter@s.whatsapp.net'],
+      decrypt: (_vote, options) => {
+        const pair = `${options.pollCreatorJid}|${options.voterJid}`;
+        attempts.push(pair);
+        if (pair !== 'bot@lid|voter@s.whatsapp.net') throw new Error('bad auth tag');
+        return { selectedOptions: [new Uint8Array([9])] };
+      },
+    });
+
+    expect(attempts).toEqual([
+      'bot@s.whatsapp.net|voter@lid',
+      'bot@s.whatsapp.net|voter@s.whatsapp.net',
+      'bot@lid|voter@lid',
+      'bot@lid|voter@s.whatsapp.net',
+    ]);
+    expect(result).toEqual({
+      vote: { selectedOptions: [new Uint8Array([9])] },
+      creatorJid: 'bot@lid',
+      voterJid: 'voter@s.whatsapp.net',
+    });
+  });
+
+  it('returns undefined when no JID form authenticates', () => {
+    expect(
+      decryptPollVoteWithJidCandidates({
+        vote: {} as never,
+        pollEncKey: new Uint8Array(),
+        pollMsgId: 'poll-404',
+        creatorCandidates: ['bot@lid'],
+        voterCandidates: ['voter@lid'],
+        decrypt: () => {
+          throw new Error('bad auth tag');
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe('Baileys dependency contract', () => {
+  it('pins the patched rc13 build exactly', () => {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    expect(pkg.dependencies['@whiskeysockets/baileys']).toBe('7.0.0-rc13');
   });
 });

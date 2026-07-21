@@ -2,7 +2,7 @@
  * WhatsApp channel adapter (v2) — native Baileys v7 implementation.
  *
  * Implements ChannelAdapter directly (no Chat SDK bridge) using
- * @whiskeysockets/baileys 7.0.0-rc.9 (pinned — last release, unmaintained).
+ * @whiskeysockets/baileys 7.0.0-rc13 (pinned).
  * Ports proven v1 infrastructure: getMessage fallback, outgoing queue,
  * group metadata cache, LID mapping, reconnection with backoff.
  *
@@ -134,6 +134,69 @@ const GROUP_METADATA_CACHE_TTL_MS = 60_000; // 1 min for outbound sends
 const SENT_MESSAGE_CACHE_MAX = 256;
 const RECONNECT_DELAY_MS = 5000;
 const PENDING_QUESTIONS_MAX = 64;
+
+export function buildWhatsAppPollPayload(
+  name: string,
+  values: unknown[],
+  selectableCount = 1,
+): { poll: { name: string; values: string[]; selectableCount: number } } {
+  return {
+    poll: {
+      name,
+      values: values.map((value) => String(value)),
+      selectableCount: selectableCount > 0 ? selectableCount : 1,
+    },
+  };
+}
+
+export function buildWhatsAppEventPayload(content: Record<string, unknown>): { event: EventMessageOptions } {
+  const event: EventMessageOptions = {
+    name: content.name as string,
+    startDate: new Date(content.startTime as string),
+  };
+  if (content.endTime) event.endDate = new Date(content.endTime as string);
+  if (content.description) event.description = content.description as string;
+  if (content.location) event.location = { name: content.location as string };
+  if (content.call === 'audio' || content.call === 'video') event.call = content.call;
+  return { event };
+}
+
+export function buildWhatsAppContactPayload(
+  vcard: string,
+  displayName = 'Contact',
+): { contacts: { displayName: string; contacts: Array<{ displayName: string; vcard: string }> } } {
+  return { contacts: { displayName, contacts: [{ displayName, vcard }] } };
+}
+
+export function decryptPollVoteWithJidCandidates<T>(args: {
+  vote: Parameters<typeof decryptPollVote>[0];
+  pollEncKey: Uint8Array;
+  pollMsgId: string;
+  voterCandidates: string[];
+  creatorCandidates: string[];
+  decrypt?: (vote: Parameters<typeof decryptPollVote>[0], options: Parameters<typeof decryptPollVote>[1]) => T;
+}): { vote: T; voterJid: string; creatorJid: string } | undefined {
+  const decrypt = args.decrypt ?? (decryptPollVote as typeof args.decrypt);
+  for (const creatorJid of args.creatorCandidates) {
+    for (const voterJid of args.voterCandidates) {
+      try {
+        return {
+          vote: decrypt!(args.vote, {
+            pollEncKey: args.pollEncKey,
+            pollCreatorJid: creatorJid,
+            pollMsgId: args.pollMsgId,
+            voterJid,
+          }),
+          voterJid,
+          creatorJid,
+        };
+      } catch {
+        // LID/phone JID mismatches fail authentication; try the next pair.
+      }
+    }
+  }
+  return undefined;
+}
 
 /** Normalize an option label to a slash command: "Approve" → "/approve" */
 function optionToCommand(option: string): string {
@@ -337,7 +400,6 @@ export function computeIsMention(shared: boolean, isGroup: boolean, botMentioned
   if (!isGroup) return true;
   return botMentionedInGroup ? true : undefined;
 }
-
 
 /**
  * Subset of a normalized Baileys message carrying the per-type `contextInfo`
@@ -1053,26 +1115,14 @@ registerChannelAdapter('whatsapp', {
                     [getKeyAuthor(creationKey, meId), meId, sock.user?.id, botLid].filter((j): j is string => !!j),
                   ),
                 ];
-                let voteMsg: ReturnType<typeof decryptPollVote> | undefined;
-                let voterJid = getKeyAuthor(msg.key, meId);
-                outer: for (const creator of creatorCandidates) {
-                  for (const voter of voterCandidates) {
-                    try {
-                      voteMsg = decryptPollVote(pollUpdate.vote, {
-                        pollEncKey,
-                        pollCreatorJid: creator,
-                        pollMsgId: pollId,
-                        voterJid: voter,
-                      });
-                      voterJid = voter;
-                      log.info('Poll vote decrypted', { pollId, creator, voter });
-                      break outer;
-                    } catch {
-                      /* wrong JID form — try the next candidate */
-                    }
-                  }
-                }
-                if (!voteMsg) {
+                const decrypted = decryptPollVoteWithJidCandidates({
+                  vote: pollUpdate.vote,
+                  pollEncKey,
+                  pollMsgId: pollId,
+                  voterCandidates,
+                  creatorCandidates,
+                });
+                if (!decrypted) {
                   log.warn('Poll vote: no JID combination authenticated', {
                     pollId,
                     voterCandidates,
@@ -1080,6 +1130,13 @@ registerChannelAdapter('whatsapp', {
                   });
                   continue;
                 }
+                const voteMsg = decrypted.vote;
+                const voterJid = decrypted.voterJid;
+                log.info('Poll vote decrypted', {
+                  pollId,
+                  creator: decrypted.creatorJid,
+                  voter: voterJid,
+                });
 
                 // Is this poll an ask_question / approval card? If so, map the
                 // vote to its option value and answer via onAction — and never
@@ -1443,13 +1500,10 @@ registerChannelAdapter('whatsapp', {
             await ensureTcToken(platformId);
             const selectableCount =
               typeof content.selectableCount === 'number' && content.selectableCount > 0 ? content.selectableCount : 1;
-            const sent = await sock.sendMessage(platformId, {
-              poll: {
-                name: content.name as string,
-                values: (content.values as unknown[]).map((v) => String(v)),
-                selectableCount,
-              },
-            });
+            const sent = await sock.sendMessage(
+              platformId,
+              buildWhatsAppPollPayload(content.name as string, content.values as unknown[], selectableCount),
+            );
             if (sent?.key?.id && sent.message) {
               sentMessageCache.set(sent.key.id, sent.message);
             }
@@ -1464,15 +1518,7 @@ registerChannelAdapter('whatsapp', {
         if (content.operation === 'event' && content.name && content.startTime) {
           try {
             await ensureTcToken(platformId);
-            const event: EventMessageOptions = {
-              name: content.name as string,
-              startDate: new Date(content.startTime as string),
-            };
-            if (content.endTime) event.endDate = new Date(content.endTime as string);
-            if (content.description) event.description = content.description as string;
-            if (content.location) event.location = { name: content.location as string };
-            if (content.call === 'audio' || content.call === 'video') event.call = content.call;
-            const sent = await sock.sendMessage(platformId, { event });
+            const sent = await sock.sendMessage(platformId, buildWhatsAppEventPayload(content));
             if (sent?.key?.id && sent.message) {
               sentMessageCache.set(sent.key.id, sent.message);
             }
@@ -1488,12 +1534,10 @@ registerChannelAdapter('whatsapp', {
           try {
             await ensureTcToken(platformId);
             const displayName = (content.displayName as string) || 'Contact';
-            const sent = await sock.sendMessage(platformId, {
-              contacts: {
-                displayName,
-                contacts: [{ displayName, vcard: content.vcard as string }],
-              },
-            });
+            const sent = await sock.sendMessage(
+              platformId,
+              buildWhatsAppContactPayload(content.vcard as string, displayName),
+            );
             if (sent?.key?.id && sent.message) {
               sentMessageCache.set(sent.key.id, sent.message);
             }
