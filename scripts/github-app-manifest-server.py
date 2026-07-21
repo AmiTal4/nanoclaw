@@ -26,28 +26,30 @@ PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 8899
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE", "https://webhook.edna-ai.online")
 OUT_DIR = os.path.expanduser("~/.nanoclaw-github-apps")
 
+DEFAULT_PERMISSIONS = {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "actions": "write",
+    "workflows": "write",
+    "administration": "write",
+    "checks": "write",
+    "statuses": "write",
+    "environments": "write",
+    "secrets": "write",
+    "organization_administration": "write",
+    "members": "read",
+}
+
 MANIFEST = {
     "name": APP_NAME,
     "url": PUBLIC_BASE,
     # GitHub requires hook_attributes.url whenever hook_attributes is present,
     # even with active: false. The URL is never called.
-    "hook_attributes": {"url": f"{os.environ.get('PUBLIC_BASE', 'https://webhook.edna-ai.online')}/gh-manifest/hook", "active": False},
+    "hook_attributes": {"url": f"{PUBLIC_BASE}/gh-manifest/hook", "active": False},
     "redirect_url": f"{PUBLIC_BASE}/gh-manifest/callback",
     "public": False,
-    "default_permissions": {
-        "contents": "write",
-        "pull_requests": "write",
-        "issues": "write",
-        "actions": "write",
-        "workflows": "write",
-        "administration": "write",
-        "checks": "write",
-        "statuses": "write",
-        "environments": "write",
-        "secrets": "write",
-        "organization_administration": "write",
-        "members": "read",
-    },
+    "default_permissions": json.loads(os.environ.get("GH_APP_PERMISSIONS", "null")) or DEFAULT_PERMISSIONS,
 }
 
 FORM_PAGE = f"""<!doctype html>

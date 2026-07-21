@@ -149,6 +149,22 @@ function ensureServer(): void {
           p.catch(() => {});
         },
       });
+      if (webRes.status >= 400) {
+        const bodyText = await webRes
+          .clone()
+          .text()
+          .catch(() => '');
+        const slackTs = req.headers['x-slack-request-timestamp'];
+        log.warn('Webhook request rejected', {
+          adapter: adapterName,
+          method: req.method,
+          status: webRes.status,
+          responseBody: bodyText.slice(0, 200),
+          hasSlackSignature: Boolean(req.headers['x-slack-signature']),
+          slackTimestampSkewSec:
+            typeof slackTs === 'string' && slackTs !== '' ? Math.round(Date.now() / 1000 - Number(slackTs)) : undefined,
+        });
+      }
       await fromWebResponse(webRes, res);
     } catch (err) {
       log.error('Webhook handler error', { adapter: adapterName, url: req.url, err });
