@@ -60,6 +60,17 @@ describe('materializeTemplateSkills', () => {
     expect(fs.lstatSync(path.join(dest, 'shared')).isSymbolicLink()).toBe(true);
   });
 
+  it('ignores container-only skill symlinks in the template source', () => {
+    templateSkill('g5', 'widget', 'SKILL.md', 'body');
+    const src = path.join(DATA_DIR, 'v2-sessions', 'g5', '.claude-shared', 'skills');
+    fs.symlinkSync('/app/skills/agent-browser', path.join(src, 'agent-browser'));
+    const dest = path.join(TEST_ROOT, 'grp5', '.agents', 'skills');
+
+    expect(() => materializeTemplateSkills('g5', dest)).not.toThrow();
+    expect(fs.existsSync(path.join(dest, 'widget', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'agent-browser'))).toBe(false);
+  });
+
   it('does not destroy skills when dest equals the source (Claude reads source directly)', () => {
     templateSkill('g4', 'widget', 'SKILL.md', 'body');
     const src = path.join(DATA_DIR, 'v2-sessions', 'g4', '.claude-shared', 'skills');

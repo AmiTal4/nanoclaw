@@ -44,9 +44,19 @@ export function materializeTemplateSkills(agentGroupId: string, destSkillsDir: s
 
   fs.mkdirSync(destSkillsDir, { recursive: true });
   for (const name of fs.readdirSync(src)) {
-    if (!fs.statSync(path.join(src, name)).isDirectory()) continue;
+    const source = path.join(src, name);
+    let stat: fs.Stats;
+    try {
+      // Shared container skills are symlinks to /app/skills and are dangling on
+      // the host. Only real directories belong to the template-skill plane.
+      stat = fs.lstatSync(source);
+    } catch {
+      // The entry may disappear while a group is being reconfigured.
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
     const dest = path.join(destSkillsDir, name);
     fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(path.join(src, name), dest, { recursive: true });
+    fs.cpSync(source, dest, { recursive: true });
   }
 }
