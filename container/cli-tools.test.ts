@@ -54,6 +54,11 @@ describe('cli-tools manifest', () => {
     expect(dockerfile).toMatch(/install-cli-tools\.sh \/tmp\/cli-tools\.json/);
   });
 
+  it('keeps PNPM_HOME visible to provider login shells', () => {
+    expect(dockerfile).toContain('/etc/profile.d/nanoclaw-pnpm-path.sh');
+    expect(dockerfile).toContain('export PATH="/pnpm:$PATH"');
+  });
+
   it('installs via pnpm and writes only-built opt-ins (preserves the supply-chain path)', () => {
     expect(installer).toMatch(/pnpm install -g/);
     expect(installer).toMatch(/only-built-dependencies\[\]=/);

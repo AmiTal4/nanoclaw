@@ -117,6 +117,13 @@ COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
 
+# Codex executes shell commands through `bash -lc`. Debian's /etc/profile
+# replaces PATH for login shells, hiding every CLI installed in PNPM_HOME even
+# though the container process itself can see them. Restore the global CLI bin
+# after /etc/profile sets its defaults so agent-browser, vercel, etc. work from
+# both provider runtimes.
+RUN printf 'export PATH="/pnpm:$PATH"\n' > /etc/profile.d/nanoclaw-pnpm-path.sh
+
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
