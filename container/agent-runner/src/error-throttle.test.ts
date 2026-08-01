@@ -110,4 +110,80 @@ describe('ErrorGate', () => {
     gate.handle('Error: something broke');
     expect(gate.isPaused()).toBe(false);
   });
+
+  describe('auth-class errors', () => {
+    it('pauses for an hour — only an operator can renew a vaulted credential', () => {
+      const { gate, advance } = makeGate(NOW);
+      const verdict = gate.handle('Reconnecting... 2/5: Read-only file system (os error 30)', true);
+      expect(verdict.auth).toBe(true);
+      expect(gate.isPaused()).toBe(true);
+      expect(gate.pauseRemainingMs()).toBe(60 * 60_000);
+      advance(60 * 60_000);
+      expect(gate.isPaused()).toBe(false);
+    });
+
+    it('dedupes across differing texts — one dead credential is one incident', () => {
+      const { gate } = makeGate(NOW);
+      expect(gate.handle('401 Unauthorized', true).post).toBe(true);
+      // Codex words the same expiry differently on nearly every turn.
+      expect(gate.handle('Read-only file system (os error 30)', true).post).toBe(false);
+      expect(gate.handle('token_expired', true).post).toBe(false);
+    });
+
+    it('re-posts once the cooldown has elapsed', () => {
+      const { gate, advance } = makeGate(NOW);
+      expect(gate.handle('401 Unauthorized', true).post).toBe(true);
+      advance(15 * 60_000);
+      expect(gate.handle('401 Unauthorized', true).post).toBe(true);
+    });
+
+    it('keeps auth and limit classes in separate dedupe buckets', () => {
+      const { gate } = makeGate(NOW);
+      expect(gate.handle('401 Unauthorized', true).post).toBe(true);
+      // Different operator action — must not be swallowed as a repeat.
+      expect(gate.handle("You've hit your session limit · resets 3pm (UTC)").post).toBe(true);
+    });
+
+    it('classifies as auth when the caller says so, even if the text reads like a limit', () => {
+      const { gate } = makeGate(NOW);
+      const verdict = gate.handle('rate limit exceeded (401 token_expired)', true);
+      expect(verdict.auth).toBe(true);
+      expect(verdict.limit).toBe(true);
+      // Auth wins the dedupe key, so a following auth error is suppressed.
+      expect(gate.handle('a totally different auth error', true).post).toBe(false);
+    });
+
+    it('leaves ordinary errors unclassified', () => {
+      const { gate } = makeGate(NOW);
+      const verdict = gate.handle('Error: something broke');
+      expect(verdict.auth).toBe(false);
+      expect(gate.isPaused()).toBe(false);
+    });
+
+    it('reports the pause cause so the loop logs the right operator action', () => {
+      const { gate, advance } = makeGate(NOW);
+      gate.handle("You've hit your session limit · resets 3pm (UTC)");
+      expect(gate.pauseReason()).toBe('limit');
+
+      // The 2.5h limit pause outlasts the 1h auth pause, but the credential
+      // is still the thing a human has to fix — so it names the cause.
+      gate.handle('401 Unauthorized', true);
+      expect(gate.pauseReason()).toBe('auth');
+
+      // Once the auth window lapses and only the limit pause remains, the
+      // label goes back to the limit.
+      advance(60 * 60_000);
+      expect(gate.isPaused()).toBe(true);
+      expect(gate.pauseReason()).toBe('limit');
+    });
+
+    it('keeps the auth cause when a shorter limit pause follows', () => {
+      const { gate } = makeGate(NOW);
+      gate.handle('401 Unauthorized', true);
+      // 15-min default limit pause cannot shorten or relabel the 1h auth pause.
+      gate.handle('Rate limit exceeded');
+      expect(gate.pauseReason()).toBe('auth');
+      expect(gate.pauseRemainingMs()).toBe(60 * 60_000);
+    });
+  });
 });

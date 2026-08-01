@@ -30,6 +30,31 @@ import {
 } from './codex-app-server.js';
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Codex errors that mean the vaulted OpenAI credential is dead.
+ *
+ * Two shapes, because Codex reports the same condition two different ways:
+ *
+ *   1. The plain form — the gateway's injected token is rejected upstream and
+ *      the 401 body reaches us intact (`token_expired`, `token_invalidated`,
+ *      "Please try signing in again").
+ *
+ *   2. The read-only form — Codex reacts to a 401 by trying to REFRESH, which
+ *      writes `$CODEX_HOME/auth.json`. That path is the OneCLI sentinel stub,
+ *      bind-mounted read-only on purpose (src/providers/codex.ts), so the
+ *      refresh dies with EROFS and Codex surfaces *that* as the turn error —
+ *      burying the 401 that caused it. Under NanoClaw an EROFS from Codex has
+ *      exactly one meaning: it attempted a credential refresh, so the vault
+ *      copy is stale. Nothing else in the container writes there.
+ *
+ * Matching the second form is what makes the alert fire at all: in the
+ * 2026-08-01 expiry the operator only ever saw "Reconnecting... 2/5:
+ * Read-only file system (os error 30)", with the real 401 visible nowhere
+ * outside Codex's own log database.
+ */
+const AUTH_FAILURE_RE =
+  /token[_ ]expired|token[_ ]invalidated|authentication token is expired|please try signing in again|\b401\b\s*unauthorized|read-only file system|os error 30/i;
 const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 export interface CodexRuntimeDeps {
@@ -109,6 +134,11 @@ export class CodexProvider implements AgentProvider {
   isSessionInvalid(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return STALE_THREAD_RE.test(msg);
+  }
+
+  isAuthFailure(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return AUTH_FAILURE_RE.test(msg);
   }
 
   query(input: QueryInput): AgentQuery {

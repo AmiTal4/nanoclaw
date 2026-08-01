@@ -17,6 +17,9 @@
 // registerApprovalHandler / requestApproval symbols are bound when self-mod
 // registers its handlers at import time.
 import './approvals/index.js';
+// Credential health depends on the approvals primitive for approver picking,
+// so it loads after it for the same reason self-mod does.
+import './credential-health/index.js';
 import './interactive/index.js';
 import './permissions/index.js';
 import './agent-to-agent/index.js';

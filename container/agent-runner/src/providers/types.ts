@@ -32,6 +32,21 @@ export interface AgentProvider {
   isSessionInvalid(err: unknown): boolean;
 
   /**
+   * Optional. True when the error means this provider's credential is dead —
+   * expired, revoked, or invalidated — rather than transiently failing.
+   *
+   * Retrying does not help: v2 keeps credentials in the OneCLI vault and
+   * injects them on the wire, so nothing inside the container can renew one.
+   * The poll loop uses this to say so plainly instead of surfacing whatever
+   * text the harness happened to fail with, and to raise a host-side alert
+   * for the operator (only they can re-authenticate).
+   *
+   * Providers that omit it are treated as never auth-failing, which is the
+   * behavior before this hook existed.
+   */
+  isAuthFailure?(err: unknown): boolean;
+
+  /**
    * Optional pre-resume maintenance. Given the stored continuation token,
    * decide whether its backing transcript has grown too large or too old to
    * resume cheaply. Return a non-null reason string to tell the caller to drop
