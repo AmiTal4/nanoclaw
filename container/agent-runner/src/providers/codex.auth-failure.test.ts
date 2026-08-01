@@ -43,4 +43,35 @@ describe('CodexProvider.isAuthFailure', () => {
     // A throttle is not an auth failure — different operator action entirely.
     expect(provider.isAuthFailure(new Error("You've hit your session limit · resets 3pm (UTC)"))).toBe(false);
   });
+
+  describe('read-only failures unrelated to credentials', () => {
+    // Several container paths are read-only BY DESIGN, so EROFS on its own
+    // says nothing about the credential. Misreading one is expensive: it
+    // silences the agent for an hour and tells the operator to delete a
+    // healthy secret.
+    it('ignores an agent write to a deliberately read-only path', () => {
+      expect(
+        provider.isAuthFailure(new Error('failed to write /workspace/agent/AGENTS.md: Read-only file system (os error 30)')),
+      ).toBe(false);
+      expect(
+        provider.isAuthFailure(new Error('apply_patch failed: /workspace/agent/container.json: Read-only file system')),
+      ).toBe(false);
+      expect(
+        provider.isAuthFailure(new Error('cannot append to /workspace/agent/activity-log.md (os error 30)')),
+      ).toBe(false);
+      expect(provider.isAuthFailure(new Error('EROFS: read-only file system, open /app/skills/x'))).toBe(false);
+    });
+
+    it('still catches the read-only failure that IS a credential refresh', () => {
+      // Both observed forms carry connection/auth context; a tool-side write
+      // failure names a path instead.
+      expect(provider.isAuthFailure(new Error('Reconnecting... 2/5: Read-only file system (os error 30)'))).toBe(true);
+      expect(
+        provider.isAuthFailure(new Error('startup websocket prewarm setup failed: Read-only file system (os error 30)')),
+      ).toBe(true);
+      expect(
+        provider.isAuthFailure(new Error('failed to persist refreshed token: Read-only file system (os error 30)')),
+      ).toBe(true);
+    });
+  });
 });

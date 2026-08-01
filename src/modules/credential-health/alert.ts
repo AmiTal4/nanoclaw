@@ -44,11 +44,27 @@ export function resetCredentialAlertState(): void {
   lastAlertAt.clear();
 }
 
+/**
+ * Cap on the provider error text echoed into the DM. The string originates
+ * inside the container, so it is untrusted: bounded here so a forged or
+ * runaway row cannot turn one alert into a wall of attacker-chosen text in
+ * the owner's DM, and rendered as an attributed quote below rather than as
+ * part of the instructions.
+ */
+const MAX_DETAIL_CHARS = 300;
+
 export interface CredentialAlert {
   provider: string;
-  /** Raw provider error text, for the operator log. Never sent to the channel. */
+  /** Raw provider error text. Untrusted container output — quoted, never instructions. */
   detail: string;
   session: Session;
+}
+
+/** One line, bounded, no leading markers that could pass for our own prose. */
+function sanitizeDetail(detail: string): string {
+  const flat = detail.replace(/\s+/g, ' ').trim();
+  if (!flat) return '(none reported)';
+  return flat.length > MAX_DETAIL_CHARS ? `${flat.slice(0, MAX_DETAIL_CHARS)}…` : flat;
 }
 
 /**
@@ -122,7 +138,7 @@ export async function raiseCredentialAlert(alert: CredentialAlert, nowMs: number
     `${groupName} could not authenticate, and every agent group on ${provider} is affected — ` +
     `they share one vault credential. Agents will keep queueing messages until it's renewed.\n\n` +
     `${remediation(provider)}\n\n` +
-    `Provider error: ${detail}`;
+    `Reported by the ${groupName} container: "${sanitizeDetail(detail)}"`;
 
   try {
     await adapter.deliver(
