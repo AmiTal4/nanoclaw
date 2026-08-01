@@ -106,7 +106,31 @@ const CODEX_ENV_ALLOWLIST = new Set([
   'https_proxy',
   'no_proxy',
   'CODEX_HOME',
+  // Codex is Rust/tracing — this is the only lever over how much it writes to
+  // its log sink. Allowlisted so an operator can raise it for debugging; see
+  // CODEX_DEFAULT_RUST_LOG for why it is turned down by default.
+  'RUST_LOG',
 ]);
+
+/**
+ * Default verbosity for Codex's log database (`$CODEX_HOME/logs_*.sqlite`).
+ *
+ * Codex defaults to TRACE, and nothing ever reads the result. On this install
+ * one group's log DB reached 108 MB — 88% of it TRACE, with single
+ * `rmcp::service` rows carrying whole MCP payload bodies (~100 KB each), and
+ * five Codex groups compounding it. Nothing prunes the file, so it grows for
+ * the life of the group.
+ *
+ * `info` keeps what is actually diagnostic — including the `Refreshing token`
+ * / 401 lines that identify an expired vault credential — while dropping the
+ * payload dumps. `rmcp` and the HTTP-client crates are pinned lower still:
+ * they are the bulk of the volume and their INFO/DEBUG output is connection
+ *-pool chatter, not something an operator debugs from.
+ *
+ * Overridable: set RUST_LOG on the host and it passes through the allowlist
+ * untouched, so `RUST_LOG=trace` still gets you everything when debugging.
+ */
+const CODEX_DEFAULT_RUST_LOG = 'info,rmcp=warn,hyper_util=warn,h2=warn';
 
 export interface ThreadParams {
   model?: string;
@@ -494,6 +518,9 @@ export function buildCodexProcessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   }
   if (!next.CODEX_HOME) next.CODEX_HOME = next.HOME ? path.join(next.HOME, '.codex') : '/home/node/.codex';
   if (!next.HOME) next.HOME = '/home/node';
+  // Only when the operator hasn't chosen a level — an explicit RUST_LOG (from
+  // the allowlist above) always wins.
+  if (!next.RUST_LOG) next.RUST_LOG = CODEX_DEFAULT_RUST_LOG;
   return next;
 }
 

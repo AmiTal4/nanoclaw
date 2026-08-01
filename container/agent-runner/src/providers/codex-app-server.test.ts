@@ -241,6 +241,20 @@ describe('Codex process env', () => {
     expect(env.ONECLI_API_KEY).toBeUndefined();
     expect(env.SOME_TOKEN).toBeUndefined();
   });
+
+  it('turns Codex logging down by default — its TRACE sink is never read and grows unbounded', () => {
+    const env = buildCodexProcessEnv({ PATH: '/bin', HOME: '/home/node' });
+
+    expect(env.RUST_LOG).toBe('info,rmcp=warn,hyper_util=warn,h2=warn');
+    // rmcp is the single biggest producer: whole MCP payload bodies per row.
+    expect(env.RUST_LOG).toContain('rmcp=warn');
+  });
+
+  it('lets an explicit RUST_LOG through so debugging can still get everything', () => {
+    const env = buildCodexProcessEnv({ PATH: '/bin', HOME: '/home/node', RUST_LOG: 'trace' });
+
+    expect(env.RUST_LOG).toBe('trace');
+  });
 });
 
 function fakeServer(): { server: AppServer; writes: string[] } {
