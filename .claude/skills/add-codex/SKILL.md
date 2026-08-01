@@ -137,4 +137,12 @@ This affects only groups created afterward. Per-group `ncl groups config update 
 
 - **Container dies at boot, channel silent:** `grep 'Container exited non-zero' logs/nanoclaw.error.log` — the `stderrTail` carries the reason (e.g. `Unknown provider: codex. Registered: claude` means the barrels aren't wired in the running build).
 - **In-channel `Error: spawn codex ENOENT` on every message:** the image predates the manifest entry — re-run `./container/build.sh`.
-- **Auth errors mid-conversation:** the vault secret is missing or stale — re-run `pnpm exec tsx setup/index.ts --step provider-auth codex` (subscription re-login updates the vault copy).
+- **Auth errors mid-conversation:** the vault secret is missing or expired. The auth step short-circuits whenever an OpenAI secret already exists, so a stale one must be removed before re-running it:
+
+  ```bash
+  onecli secrets list                                    # find the Codex secret's id
+  onecli secrets delete --id <codex-secret-id>
+  pnpm exec tsx setup/index.ts --step provider-auth codex
+  ```
+
+  On a headless host pick **device pairing**, not browser sign-in. Expect the failure to look like something else: Codex answers a 401 by trying to refresh into the read-only OneCLI auth stub, so the channel shows `Read-only file system (os error 30)` and the real `token_expired` appears only in `~/.codex/logs_*.sqlite` inside the container. The host logs `Provider credential failed` for this case.

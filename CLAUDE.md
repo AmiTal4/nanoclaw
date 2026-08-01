@@ -72,6 +72,7 @@ For ad-hoc queries from skills or scripts, use the in-tree wrapper rather than t
 | `src/modules/approvals/primitive.ts` | `pickApprover`, `pickApprovalDelivery`, `requestApproval`, approval-handler registry |
 | `src/command-gate.ts` | Router-side admin command gate — queries `user_roles` directly (no env var, no container-side check) |
 | `src/modules/approvals/onecli-approvals.ts` | OneCLI credentialed-action approval bridge |
+| `src/modules/credential-health/alert.ts` | Credential-expiry alerting — turns a runner `credential_alert` into an error log line + an operator DM, deduped per provider |
 | `src/modules/permissions/user-dm.ts` | Cold-DM resolution + `user_dms` cache |
 | `src/group-init.ts` | Per-agent-group filesystem scaffold (CLAUDE.md, skills) — agent-runner source is a shared read-only mount, not copied per group |
 | `src/db/container-configs.ts` | CRUD for `container_configs` table (per-group container runtime config) |
@@ -174,6 +175,17 @@ onecli agents set-secrets --id <agent-id> --secret-ids ...  # or stay selective,
 ```
 
 No container restart needed — the gateway looks up secrets per request.
+
+### Credential expiry
+
+A vaulted OAuth credential (ChatGPT subscription auth, any refresh-token secret) expires on its own schedule, and nothing in the container can renew it — OneCLI holds the real secret and injects it on the wire. Expiry is detected by the provider, not the host: `AgentProvider.isAuthFailure` (container-side) classifies the error, the poll loop replies with a plain "credential expired" message instead of the harness's own text, pauses for an hour, and raises a `credential_alert` system message. The host's credential-health module logs it to `logs/nanoclaw.error.log` and DMs an owner/admin with the fix.
+
+Alerts are deduped **per provider**, not per group — one vault credential backs every group on that provider, so an expiry is a single incident no matter how many agents hit it.
+
+Two gotchas when re-authenticating Codex:
+
+- `setup/index.ts --step provider-auth codex` **short-circuits whenever any OpenAI secret exists** — it checks existence, not validity. Delete the stale secret first (`onecli secrets delete --id <id>`), or the step reports "already connected" and changes nothing.
+- The vaulted ChatGPT session must be dedicated to the gateway. The auth step logs in under a throwaway `CODEX_HOME` for exactly this reason; vaulting a copy of a personal `~/.codex/auth.json` makes two consumers share one OAuth session, and refresh-token rotation then strands both.
 
 ### Requiring approval for credential use
 

@@ -63,6 +63,23 @@ function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * What the channel sees when the provider's credential is dead.
+ *
+ * Deliberately not the raw harness text: that names a symptom the reader
+ * can do nothing with (Codex reports a read-only auth.json), and the person
+ * reading it is usually not the operator. Says what broke, that it is not
+ * their message, and that their message is not lost.
+ */
+export function credentialFailureText(providerName: string): string {
+  return (
+    `⚠️ I can't reach the model — the ${providerName} credential has expired, ` +
+    `so requests are being rejected. This needs an operator to re-authenticate ` +
+    `the vault; nothing inside my container can renew it. Your messages are ` +
+    `queued and I'll answer once it's fixed.`
+  );
+}
+
 export interface PollLoopConfig {
   provider: AgentProvider;
   /**
@@ -130,7 +147,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (config.signal?.aborted) return;
     if (errorGate.isPaused()) {
       if (!loggedPause) {
-        log(`Provider limit hit — pausing turns for ${Math.round(errorGate.pauseRemainingMs() / 60_000)} min`);
+        const cause =
+          errorGate.pauseReason() === 'auth' ? 'Provider credential expired' : 'Provider limit hit';
+        log(`${cause} — pausing turns for ${Math.round(errorGate.pauseRemainingMs() / 60_000)} min`);
         loggedPause = true;
       }
       await sleep(POLL_INTERVAL_MS);
@@ -289,7 +308,33 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         clearContinuation(config.providerName);
       }
 
-      const verdict = errorGate.handle(errMsg);
+      // Only the provider can tell a dead credential from a transient
+      // failure — the harness's own text often names something else
+      // entirely (Codex reports a read-only auth.json, not the 401 that
+      // triggered the refresh). Nothing in here can fix it either: the
+      // credential lives in the OneCLI vault, so this needs an operator.
+      const authFailure = config.provider.isAuthFailure?.(err) === true;
+      const verdict = errorGate.handle(errMsg, authFailure);
+
+      if (authFailure) {
+        // Host-side alert, independent of the chat post below: the failing
+        // group may be one nobody is watching (a utility agent behind a2a,
+        // a scheduled task), and the operator who can re-authenticate may
+        // not be in this channel at all.
+        writeMessageOut({
+          id: generateId(),
+          kind: 'system',
+          content: JSON.stringify({
+            action: 'credential_alert',
+            provider: config.providerName,
+            detail: errMsg,
+          }),
+        });
+        log(`Credential alert raised for provider ${config.providerName}: ${errMsg}`);
+      }
+
+      const postText = authFailure ? credentialFailureText(config.providerName) : `Error: ${errMsg}`;
+
       if (routing.channelType === 'agent') {
         log('Suppressing error post to a2a destination');
       } else if (!verdict.post) {
@@ -301,7 +346,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           platform_id: routing.platformId,
           channel_type: routing.channelType,
           thread_id: routing.threadId,
-          content: JSON.stringify({ text: `Error: ${errMsg}` }),
+          content: JSON.stringify({ text: postText }),
         });
       }
 

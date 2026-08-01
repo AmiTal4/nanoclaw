@@ -30,6 +30,37 @@ import {
 } from './codex-app-server.js';
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Unambiguous credential failures — the 401 body survived to the runner.
+ */
+const AUTH_FAILURE_RE =
+  /token[_ ]expired|token[_ ]invalidated|authentication token is expired|please try signing in again|\b401\b\s*unauthorized/i;
+
+/**
+ * A read-only-filesystem failure, which Codex reports instead of the 401 that
+ * caused it: it answers a 401 by trying to REFRESH, writing
+ * `$CODEX_HOME/auth.json` — the OneCLI sentinel stub, bind-mounted read-only
+ * on purpose (src/providers/codex.ts). The refresh dies with EROFS and that
+ * becomes the turn error, burying the cause. Matching it is what makes the
+ * alert fire at all: in the 2026-08-01 expiry the operator only ever saw
+ * "Reconnecting... 2/5: Read-only file system (os error 30)".
+ */
+const READ_ONLY_FS_RE = /read-only file system|os error 30/i;
+
+/**
+ * ...but EROFS alone is NOT sufficient, because several paths in the container
+ * are read-only by design — the composed AGENTS.md, `.agents/`,
+ * `container.json`, `activity-log.md`. An agent that tries to edit one of
+ * those produces the same string with nothing to do with credentials, and
+ * misreading it would be expensive: the poll loop pauses turns for an hour and
+ * DMs the operator a runbook that says to delete a *healthy* credential.
+ *
+ * So the EROFS branch additionally requires connection/auth context. Both
+ * observed forms carry it ("Reconnecting…", "startup websocket prewarm setup
+ * failed"), while a tool-side write failure names a path instead.
+ */
+const AUTH_CONTEXT_RE = /reconnect|prewarm|websocket|\bauth\b|token|login|refresh|sign[- ]?in|credential/i;
 const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 export interface CodexRuntimeDeps {
@@ -109,6 +140,12 @@ export class CodexProvider implements AgentProvider {
   isSessionInvalid(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return STALE_THREAD_RE.test(msg);
+  }
+
+  isAuthFailure(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (AUTH_FAILURE_RE.test(msg)) return true;
+    return READ_ONLY_FS_RE.test(msg) && AUTH_CONTEXT_RE.test(msg);
   }
 
   query(input: QueryInput): AgentQuery {
