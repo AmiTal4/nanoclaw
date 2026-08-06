@@ -29,6 +29,7 @@ export interface ContainerConfigRow {
   history_mode: string; // 'push' | 'pull' — accumulated context delivery mode
   disabled_tools: string; // JSON: provider tool names denied for this group
   block_local_web_fetch: number; // 1 blocks WebFetch to local/private addresses
+  timezone: string | null; // IANA id; NULL = follow the install-global timezone
   updated_at: string;
 }
 
@@ -221,6 +222,8 @@ export interface PendingApproval {
   expires_at: string | null;
   status: 'pending' | 'approved' | 'rejected' | 'expired' | 'awaiting_reason';
   title: string;
+  /** Original approval-card body, retained when the card reaches a terminal state. */
+  question: string;
   options_json: string;
   /** When set, only this exact user may resolve the approval. */
   approver_user_id: string | null;

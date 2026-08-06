@@ -71,6 +71,7 @@ export function backfillContainerConfigs(): void {
       history_mode: 'push',
       disabled_tools: JSON.stringify(legacy.disabledTools ?? []),
       block_local_web_fetch: legacy.blockLocalWebFetch === true ? 1 : 0,
+      timezone: null,
       updated_at: new Date().toISOString(),
     };
 

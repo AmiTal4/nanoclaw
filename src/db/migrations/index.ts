@@ -21,6 +21,11 @@ import { migration019 } from './019-wiring-threads.js';
 import { migration020 } from './020-activity-journal.js';
 import { migration021 } from './021-history-mode.js';
 import { migration022 } from './022-container-config-public-safety.js';
+// Upstream shipped these as 020/021; this fork had already taken those numbers,
+// so they are renumbered to 023/024. Applied-state is keyed on `name`, not
+// `version`, so the renumber is invisible to any DB that already ran them.
+import { migration023 } from './023-container-config-timezone.js';
+import { migration024 } from './024-approval-question.js';
 
 export interface Migration {
   version: number;
@@ -58,6 +63,8 @@ export const migrations: Migration[] = [
   migration020,
   migration021,
   migration022,
+  migration023,
+  migration024,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a
