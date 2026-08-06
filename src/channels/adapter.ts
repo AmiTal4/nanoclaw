@@ -51,7 +51,14 @@ export interface InboundEvent {
   threadId: string | null;
   message: {
     id: string;
-    kind: 'chat' | 'chat-sdk';
+    /**
+     * 'chat' / 'chat-sdk' are human turns. 'webhook' is a structured machine
+     * event injected by a non-chat source (see src/modules/n8n-inbound):
+     * it renders as `<webhook source=... event=...>` rather than `<message>`,
+     * and skips the slash-command gate in deliverToAgent, which only
+     * classifies human-authored text.
+     */
+    kind: 'chat' | 'chat-sdk' | 'webhook';
     content: string; // JSON blob
     timestamp: string;
     /**
