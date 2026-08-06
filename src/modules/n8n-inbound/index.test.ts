@@ -29,6 +29,13 @@ const getMessagingGroupAgentByPair = vi.fn<(...args: unknown[]) => unknown>();
 const getAgentGroup = vi.fn<(...args: unknown[]) => unknown>();
 const getAgentGroupByFolder = vi.fn<(...args: unknown[]) => unknown>();
 
+// This install never loads .env into process.env (src/env.ts) — config must
+// come through readEnvFile or the module silently refuses to register. Mocked
+// to {} so the tests drive config via the process.env fallback instead of
+// whatever the real .env happens to hold.
+const readEnvFile = vi.fn<(keys: string[]) => Record<string, string>>(() => ({}));
+vi.mock('../../env.js', () => ({ readEnvFile: (keys: string[]) => readEnvFile(keys) }));
+
 vi.mock('../../router.js', () => ({ routeInbound: (e: InboundEvent) => routeInbound(e) }));
 vi.mock('../../db/messaging-groups.js', () => ({
   createMessagingGroup: (...a: unknown[]) => createMessagingGroup(...a),
@@ -48,6 +55,9 @@ process.env.N8N_REPLY_TO_PLATFORM_ID = '972523968011@s.whatsapp.net';
 
 // Import for side effects (route registration) after env is in place.
 await import('./index.js');
+
+// Captured before beforeEach's clearAllMocks can wipe the import-time call.
+const envKeysAtImport = readEnvFile.mock.calls[0]?.[0] ?? [];
 
 async function post(body: unknown, headers: Record<string, string> = {}, method = 'POST'): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
@@ -76,6 +86,15 @@ afterAll(async () => {
 });
 
 describe('n8n inbound webhook', () => {
+  it('reads config through readEnvFile, not process.env', () => {
+    // Regression: reading process.env directly made the module refuse to
+    // register on a real install, because .env is deliberately never loaded
+    // into the process environment (it would leak to agent containers).
+    expect(envKeysAtImport).toContain('N8N_INBOUND_SECRET');
+    expect(envKeysAtImport).toContain('N8N_REPLY_TO_PLATFORM_ID');
+    expect(envKeysAtImport).toContain('N8N_AGENT_GROUP');
+  });
+
   it('rejects a request with no secret header, without routing', async () => {
     const res = await post({ entity: 'homelab-monitoring' }, { 'X-N8N-Secret': '' });
     expect(res.status).toBe(401);
