@@ -43,7 +43,16 @@ After deploying, verify the live URL:
 vercel inspect <deployment-url> --token placeholder
 ```
 
-If you have `agent-browser` available, open the deployed URL and take a screenshot to visually verify.
+## Pre-Send Checks (do this before sharing the URL)
+
+Don't send the deployment URL to the user until you've confirmed it's actually working. At minimum:
+
+1. **Local build passes** — run `npm run build` (or the project's build command) before `vercel deploy`. If the build fails locally, fix it first; don't deploy broken code.
+2. **Deployment succeeded** — the `vercel deploy` output shows a "Production: https://..." URL and the status is READY (confirm with `vercel inspect`).
+3. **Live URL responds** — `curl -sI <url> | head -1` should return `HTTP/2 200` (or another 2xx/3xx). A 404/500 means something's broken even though Vercel reported success.
+4. **Optional visual check** — if `agent-browser` is loaded, open the URL and eyeball it. Helpful for catching broken layouts that a 200 response wouldn't reveal.
+
+If any check fails, fix the issue and redeploy before reporting to the user.
 
 ## Project Management
 

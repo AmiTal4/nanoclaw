@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -44,9 +44,28 @@ describe('cli-tools manifest', () => {
 
   it('keeps the baseline CLIs the agent depends on', () => {
     const names = manifest.map((t) => t.name);
-    for (const required of ['vercel', 'agent-browser', '@anthropic-ai/claude-code']) {
+    // Only what the agent cannot function without: a browser it drives, and the
+    // provider CLI it runs. Everything else is opt-in — a tool nobody asked for
+    // is bytes in every image, on every machine, for everyone.
+    for (const required of ['agent-browser', '@anthropic-ai/claude-code']) {
       expect(names).toContain(required);
     }
+  });
+
+  it('bakes in nothing that a skill is meant to add on request', () => {
+    // Regression guard for the opt-in boundary. `vercel` was baked in and is
+    // now added by /add-vercel; anything reintroducing it here silently puts a
+    // deployment CLI, and its credential surface, into every agent again.
+    //
+    // Fork note: this install has /add-vercel applied, which legitimately puts
+    // `vercel` back in the manifest — the skill's own vercel-manifest.test.ts
+    // asserts exactly that. So the guard keys on the skill's install marker
+    // (its container skill) rather than on the name alone: an entry that no
+    // installed skill accounts for is still a bare regression, which is the
+    // thing this test exists to catch.
+    const skillInstalled = existsSync(join(here, 'skills', 'vercel-cli', 'SKILL.md'));
+    const names = manifest.map((t) => t.name);
+    if (!skillInstalled) expect(names).not.toContain('vercel');
   });
 
   it('is wired into the Dockerfile build (COPY manifest + run installer)', () => {
