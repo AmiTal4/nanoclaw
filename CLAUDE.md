@@ -73,6 +73,7 @@ For ad-hoc queries from skills or scripts, use the in-tree wrapper rather than t
 | `src/command-gate.ts` | Router-side admin command gate — queries `user_roles` directly (no env var, no container-side check) |
 | `src/modules/approvals/onecli-approvals.ts` | OneCLI credentialed-action approval bridge |
 | `src/modules/credential-health/alert.ts` | Credential-expiry alerting — turns a runner `credential_alert` into an error log line + an operator DM, deduped per provider |
+| `src/modules/n8n-inbound/index.ts` | Inbound HTTP webhook for n8n — raw route on the shared webhook server, one messaging group per workflow, replies redirected via `replyTo`. See [docs/n8n-webhook.md](docs/n8n-webhook.md) |
 | `src/modules/permissions/user-dm.ts` | Cold-DM resolution + `user_dms` cache |
 | `src/group-init.ts` | Per-agent-group filesystem scaffold (CLAUDE.md, skills) — agent-runner source is a shared read-only mount, not copied per group |
 | `src/db/container-configs.ts` | CRUD for `container_configs` table (per-group container runtime config) |
@@ -314,6 +315,7 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract (wizard / pipeline / agent-relay) + boundary-rule rationale |
 | [docs/templates.md](docs/templates.md) | Agent templates: what they are, stamping via `ncl groups create --template` + the setup wizard, the OneCLI/MCP-credential model, supported providers, and how to contribute one |
 | [docs/hardened-image.md](docs/hardened-image.md) | Opt-in: pull the agent image from a registry instead of building it |
+| [docs/n8n-webhook.md](docs/n8n-webhook.md) | n8n inbound webhook: request shape, env config, the per-workflow entity model, and the tunnel/secret security notes |
 
 ## Container Build Cache
 
