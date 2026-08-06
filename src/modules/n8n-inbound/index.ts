@@ -32,6 +32,7 @@ import crypto from 'crypto';
 import type http from 'http';
 
 import { getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
+import { readEnvFile } from '../../env.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
@@ -58,6 +59,35 @@ const ENTITY_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Minimum secret length — a short shared secret on an open port is no secret. */
 const MIN_SECRET_LEN = 16;
+
+/**
+ * Config keys, read from `.env` via readEnvFile — NOT from process.env.
+ *
+ * This install deliberately never loads `.env` into the process environment
+ * (see the contract on readEnvFile in src/env.ts): anything placed there is
+ * inherited by spawned agent containers, and the shared secret must not be.
+ * Every channel adapter reads its credentials the same way.
+ */
+const ENV_KEYS = [
+  'N8N_INBOUND_SECRET',
+  'N8N_REPLY_TO_PLATFORM_ID',
+  'N8N_REPLY_TO_CHANNEL',
+  'N8N_AGENT_GROUP',
+  'N8N_WEBHOOK_PATH',
+];
+
+/** `.env` snapshot, read once at import (the file doesn't change under us). */
+const fileEnv = readEnvFile(ENV_KEYS);
+
+/**
+ * `.env` wins; process.env is a fallback for tests and dev runs. Resolved per
+ * call rather than snapshotted so tests can vary process.env between cases.
+ * Reading process.env never *places* the secret there, so the no-leak property
+ * above holds either way.
+ */
+function cfg(key: string): string | undefined {
+  return fileEnv[key] ?? process.env[key];
+}
 
 interface N8nBody {
   entity?: unknown;
@@ -196,7 +226,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, secre
   const eventName = typeof body.event === 'string' && body.event !== '' ? body.event : 'notification';
   const payload = body.payload !== undefined ? body.payload : (body.text ?? null);
 
-  const agentGroupRaw = process.env.N8N_AGENT_GROUP;
+  const agentGroupRaw = cfg('N8N_AGENT_GROUP');
   if (agentGroupRaw) {
     const agentGroupId = resolveAgentGroupId(agentGroupRaw);
     if (!agentGroupId) {
@@ -262,16 +292,16 @@ function resolveReplyTo(
       };
     }
   }
-  const platformId = process.env.N8N_REPLY_TO_PLATFORM_ID;
+  const platformId = cfg('N8N_REPLY_TO_PLATFORM_ID');
   if (!platformId) return null;
   return {
-    channelType: process.env.N8N_REPLY_TO_CHANNEL || 'whatsapp',
+    channelType: cfg('N8N_REPLY_TO_CHANNEL') || 'whatsapp',
     platformId,
     threadId: null,
   };
 }
 
-const secret = process.env.N8N_INBOUND_SECRET;
+const secret = cfg('N8N_INBOUND_SECRET');
 if (!secret) {
   log.info('n8n inbound webhook not registered (N8N_INBOUND_SECRET unset)');
 } else if (secret.length < MIN_SECRET_LEN) {
@@ -280,7 +310,7 @@ if (!secret) {
     required: MIN_SECRET_LEN,
   });
 } else {
-  registerWebhookHandler(process.env.N8N_WEBHOOK_PATH || 'n8n', (req, res) =>
+  registerWebhookHandler(cfg('N8N_WEBHOOK_PATH') || 'n8n', (req, res) =>
     handle(req, res, secret).catch((err) => {
       log.error('n8n webhook handler threw', { err });
       if (!res.headersSent) json(res, 500, { error: 'internal error' });
