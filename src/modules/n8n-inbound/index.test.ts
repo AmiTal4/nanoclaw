@@ -53,8 +53,16 @@ process.env.N8N_INBOUND_SECRET = SECRET;
 process.env.N8N_REPLY_TO_CHANNEL = 'whatsapp';
 process.env.N8N_REPLY_TO_PLATFORM_ID = '972523968011@s.whatsapp.net';
 
-// Import for side effects (route registration) after env is in place.
+// Import after env is in place, then run the host-start callbacks. Importing
+// the module only *registers* an onHostStart hook — binding the webhook port
+// is deliberately deferred to real startup (so merely loading the module graph
+// never opens a socket), which is exactly what startHostModules triggers here.
 await import('./index.js');
+const { startHostModules } = await import('../../host-lifecycle.js');
+await startHostModules({
+  db: {} as never, // the n8n start hook takes no DB
+  signal: new AbortController().signal,
+});
 
 // Captured before beforeEach's clearAllMocks can wipe the import-time call.
 const envKeysAtImport = readEnvFile.mock.calls[0]?.[0] ?? [];

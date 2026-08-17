@@ -47,8 +47,10 @@ export function materializeTemplateSkills(agentGroupId: string, destSkillsDir: s
     const source = path.join(src, name);
     let stat: fs.Stats;
     try {
-      // Shared container skills are symlinks to /app/skills and are dangling on
-      // the host. Only real directories belong to the template-skill plane.
+      // lstat: the Claude plane plants shared-skill symlinks in this store whose
+      // targets only resolve inside the container, so following them host-side
+      // throws ENOENT and bricks every spawn after a claude→codex switch.
+      // Template skills are always real directories; links are never ours.
       stat = fs.lstatSync(source);
     } catch {
       // The entry may disappear while a group is being reconfigured.

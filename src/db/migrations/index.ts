@@ -21,14 +21,17 @@ import { migration019 } from './019-wiring-threads.js';
 import { migration020 } from './020-activity-journal.js';
 import { migration021 } from './021-history-mode.js';
 import { migration022 } from './022-container-config-public-safety.js';
-// Upstream shipped these as 020/021; this fork had already taken those numbers,
-// so they are renumbered to 023/024. Applied-state is keyed on `name`, not
-// `version`, so the renumber is invisible to any DB that already ran them.
+// Upstream shipped these as 020/021/022; this fork had already taken those
+// numbers, so they are renumbered to 023/024/025. Applied-state is keyed on
+// `name`, not `version`, so the renumber is invisible to any DB that already
+// ran them.
 import { migration023 } from './023-container-config-timezone.js';
 import { migration024 } from './024-approval-question.js';
+import { migration025 } from './025-messaging-group-detached.js';
 
 export interface Migration {
   version: number;
+  /** Permanent applied identity. Never rename a migration after release. */
   name: string;
   up: (db: Database.Database) => void;
   /**
@@ -41,6 +44,13 @@ export interface Migration {
    */
   disableForeignKeys?: boolean;
 }
+
+/**
+ * Public module migrations use a core-reserved, owner-qualified identity so
+ * independent modules may reuse local migration names without colliding.
+ */
+export type ModuleMigrationName = `module:${string}:${string}`;
+export type ModuleMigration = Omit<Migration, 'name'> & { name: ModuleMigrationName };
 
 export const migrations: Migration[] = [
   migration001,
@@ -65,7 +75,35 @@ export const migrations: Migration[] = [
   migration022,
   migration023,
   migration024,
+  migration025,
 ];
+
+/**
+ * Migrations contributed by self-registering modules.
+ *
+ * When multiple migrations are pending, built-in migrations run first. Module
+ * migrations are not interleaved with built-ins by `version`; they follow the
+ * deterministic import order of their owning modules because the modules
+ * barrel uses explicit side-effect imports.
+ */
+const moduleMigrations: Migration[] = [];
+const MODULE_MIGRATION_NAME_RE = /^module:[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._-]*$/;
+
+export function registerMigration(migration: ModuleMigration): void {
+  if (!MODULE_MIGRATION_NAME_RE.test(migration.name)) {
+    throw new Error(
+      `Module migration "${migration.name}" must use "module:<module-id>:<migration-id>" and remain stable after release`,
+    );
+  }
+  if ([...migrations, ...moduleMigrations].some((candidate) => candidate.name === migration.name)) {
+    throw new Error(`Migration "${migration.name}" already registered`);
+  }
+  moduleMigrations.push(migration);
+}
+
+export function getRegisteredMigrations(): readonly Migration[] {
+  return [...migrations, ...moduleMigrations];
+}
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a
  *  parent-table recreate (child tables aren't touched), so this JSON identity
@@ -80,7 +118,7 @@ interface FkViolation {
 const fkIdentity = (v: FkViolation): string =>
   JSON.stringify({ table: v.table, rowid: v.rowid, parent: v.parent, fkid: v.fkid });
 
-export function runMigrations(db: Database.Database, list: Migration[] = migrations): void {
+export function runMigrations(db: Database.Database, list: readonly Migration[] = getRegisteredMigrations()): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,

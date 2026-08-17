@@ -42,6 +42,7 @@ import {
 import { log } from '../../log.js';
 import { routeInbound } from '../../router.js';
 import type { MessagingGroup } from '../../types.js';
+import { onHostStart } from '../../host-lifecycle.js';
 import { registerWebhookHandler } from '../../webhook-server.js';
 
 /** Channel type for every n8n-originated messaging group. */
@@ -301,21 +302,29 @@ function resolveReplyTo(
   };
 }
 
-const secret = cfg('N8N_INBOUND_SECRET');
-if (!secret) {
-  log.info('n8n inbound webhook not registered (N8N_INBOUND_SECRET unset)');
-} else if (secret.length < MIN_SECRET_LEN) {
-  log.error('n8n inbound webhook NOT registered — N8N_INBOUND_SECRET is too short', {
-    length: secret.length,
-    required: MIN_SECRET_LEN,
-  });
-} else {
+// Registration must stay inert at import time: registerWebhookHandler binds
+// the shared webhook port, and this barrel is imported by tests (and by any
+// tool that loads the module graph) that must not open a socket. onHostStart
+// defers the bind to real host startup, after the DB and adapters are ready.
+onHostStart(() => {
+  const secret = cfg('N8N_INBOUND_SECRET');
+  if (!secret) {
+    log.info('n8n inbound webhook not registered (N8N_INBOUND_SECRET unset)');
+    return;
+  }
+  if (secret.length < MIN_SECRET_LEN) {
+    log.error('n8n inbound webhook NOT registered — N8N_INBOUND_SECRET is too short', {
+      length: secret.length,
+      required: MIN_SECRET_LEN,
+    });
+    return;
+  }
   registerWebhookHandler(cfg('N8N_WEBHOOK_PATH') || 'n8n', (req, res) =>
     handle(req, res, secret).catch((err) => {
       log.error('n8n webhook handler threw', { err });
       if (!res.headersSent) json(res, 500, { error: 'internal error' });
     }),
   );
-}
+});
 
 export { ENTITY_RE, secretMatches, resolveReplyTo, ensureProvisioned };
