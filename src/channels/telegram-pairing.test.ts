@@ -46,27 +46,34 @@ describe('extractAddressedText', () => {
 });
 
 describe('extractCode', () => {
-  it('accepts a bare 4-digit code', () => {
-    expect(extractCode('0349', 'nanobot')).toBe('0349');
+  it('accepts a bare 6-digit code', () => {
+    expect(extractCode('034927', 'nanobot')).toBe('034927');
   });
-  it('accepts 4-digit code after @botname', () => {
-    expect(extractCode('@nanobot 0042', 'nanobot')).toBe('0042');
+  it('accepts 6-digit code after @botname', () => {
+    expect(extractCode('@nanobot 004217', 'nanobot')).toBe('004217');
   });
-  it('rejects non-4-digit numbers', () => {
-    expect(extractCode('@nanobot 12345', 'nanobot')).toBeNull();
-    expect(extractCode('@nanobot 12', 'nanobot')).toBeNull();
+  it('rejects non-6-digit numbers', () => {
+    expect(extractCode('@nanobot 1234567', 'nanobot')).toBeNull();
+    expect(extractCode('@nanobot 1234', 'nanobot')).toBeNull();
     expect(extractCode('12345', 'nanobot')).toBeNull();
   });
   it('rejects loose matches with surrounding text', () => {
-    expect(extractCode('my pin is 0349', 'nanobot')).toBeNull();
-    expect(extractCode('0349 thanks', 'nanobot')).toBeNull();
+    expect(extractCode('my pin is 034927', 'nanobot')).toBeNull();
+    expect(extractCode('034927 thanks', 'nanobot')).toBeNull();
+  });
+  it('accepts the code as copied from the setup card (spaced digits)', () => {
+    expect(extractCode('0   3   4   9   2   7', 'nanobot')).toBe('034927');
+    expect(extractCode(' 0 3 4 9 2 7 ', 'nanobot')).toBe('034927');
+  });
+  it('accepts spaced digits after @botname', () => {
+    expect(extractCode('@nanobot 0   3   4   9   2   7', 'nanobot')).toBe('034927');
   });
 });
 
 describe('createPairing', () => {
-  it('generates a 4-digit code', async () => {
+  it('generates a 6-digit zero-padded code', async () => {
     const r = await createPairing('main');
-    expect(r.code).toMatch(/^\d{4}$/);
+    expect(r.code).toMatch(/^\d{6}$/);
     expect(r.status).toBe('pending');
   });
 
@@ -108,6 +115,18 @@ describe('tryConsume', () => {
     expect(out).toBeNull();
   });
 
+  it('consumes a code pasted as the setup card displays it (spaced)', async () => {
+    const r = await createPairing('main');
+    const out = await tryConsume({
+      text: r.code.split('').join('   '),
+      botUsername: 'nanobot',
+      platformId: 'x',
+      isGroup: false,
+    });
+    expect(out).not.toBeNull();
+    expect(out!.status).toBe('consumed');
+  });
+
   it('matches a bare code without @botname addressing', async () => {
     const r = await createPairing('main');
     const out = await tryConsume({
@@ -130,7 +149,7 @@ describe('tryConsume', () => {
   it('cannot consume an invalidated pairing', async () => {
     const r = await createPairing('main');
     // Invalidate by sending a wrong code
-    await tryConsume({ text: '9999', botUsername: 'b', platformId: 'p', isGroup: false });
+    await tryConsume({ text: '999999', botUsername: 'b', platformId: 'p', isGroup: false });
     const out = await tryConsume({ text: `@b ${r.code}`, botUsername: 'b', platformId: 'p', isGroup: false });
     expect(out).toBeNull();
     expect(getStatus(r.code)).toBe('invalidated');
@@ -139,7 +158,7 @@ describe('tryConsume', () => {
 
 describe('getStatus', () => {
   it('returns unknown for missing codes', () => {
-    expect(getStatus('0000')).toBe('unknown');
+    expect(getStatus('000000')).toBe('unknown');
   });
 });
 
@@ -159,7 +178,7 @@ describe('waitForPairing', () => {
     const r = await createPairing('main');
     const waiter = waitForPairing(r.code, { pollMs: 30 });
     setTimeout(() => {
-      tryConsume({ text: '0000', botUsername: 'b', platformId: 'tg:1', isGroup: false });
+      tryConsume({ text: '000000', botUsername: 'b', platformId: 'tg:1', isGroup: false });
     }, 60);
     await expect(waiter).rejects.toThrow(/invalidated/);
   });
@@ -198,10 +217,10 @@ describe('attempt tracking', () => {
       onAttempt: (a) => attempts.push(a.candidate),
     });
     setTimeout(() => {
-      tryConsume({ text: '9999', botUsername: 'b', platformId: 'tg:1', isGroup: false });
+      tryConsume({ text: '999999', botUsername: 'b', platformId: 'tg:1', isGroup: false });
     }, 60);
-    await expect(waiter).rejects.toThrow(/invalidated by wrong code \(9999\)/);
-    expect(attempts).toEqual(['9999']);
+    await expect(waiter).rejects.toThrow(/invalidated by wrong code \(999999\)/);
+    expect(attempts).toEqual(['999999']);
     expect(getStatus(r.code)).toBe('invalidated');
   });
 
@@ -230,7 +249,7 @@ describe('attempt tracking', () => {
 
   it('a second code attempt after invalidation does not match', async () => {
     const r = await createPairing('main');
-    await tryConsume({ text: '9999', botUsername: 'b', platformId: 'p', isGroup: false });
+    await tryConsume({ text: '999999', botUsername: 'b', platformId: 'p', isGroup: false });
     const retry = await tryConsume({ text: r.code, botUsername: 'b', platformId: 'p', isGroup: false });
     expect(retry).toBeNull();
   });

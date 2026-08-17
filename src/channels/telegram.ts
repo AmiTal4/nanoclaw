@@ -11,7 +11,6 @@ import { createMessagingGroup, getMessagingGroupByPlatform, updateMessagingGroup
 import { grantRole, hasAnyOwner } from '../modules/permissions/db/user-roles.js';
 import { upsertUser } from '../modules/permissions/db/users.js';
 import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
-import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } from './adapter.js';
 import { tryConsume } from './telegram-pairing.js';
@@ -224,7 +223,11 @@ registerChannelAdapter('telegram', {
       extractReplyContext,
       supportsThreads: false,
       defaults: TELEGRAM_DEFAULTS,
-      transformOutboundText: sanitizeTelegramLegacyMarkdown,
+      // No transformOutboundText: @chat-adapter/telegram >= 4.29 parses
+      // CommonMark and renders escaped MarkdownV2 itself. The legacy-Markdown
+      // sanitizer this replaced was written for the old converter and, run in
+      // front of the new one, downgraded **bold** to *single-star* — which the
+      // adapter then parsed as emphasis and rendered as _italic_.
       maxTextLength: 4000,
     });
 

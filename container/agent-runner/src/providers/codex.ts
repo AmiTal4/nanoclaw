@@ -15,7 +15,6 @@ import { archiveProviderExchange } from './exchange-archive.js';
 import {
   type AppServer,
   type CodexMemorySessionHook,
-  type CodexMcpServer,
   type CodexReasoningEffort,
   type JsonRpcNotification,
   STALE_THREAD_RE,
@@ -94,28 +93,6 @@ function classifyError(message: string): string | undefined {
   if (/sandbox|permission|denied/i.test(message)) return 'sandbox';
   if (/thread|conversation|session/i.test(message)) return 'stale-session';
   return undefined;
-}
-
-/**
- * Keep only stdio MCP servers.
- *
- * `McpServerConfig` also covers remote Streamable-HTTP servers ({type:'http',
- * url}), but Codex's config.toml writer emits a `command = …` entry per server
- * and has no HTTP form — passing one through would write a TOML block with no
- * command and fail at app-server startup, taking every MCP server with it.
- * Dropping it keeps the rest working; the warning is the operator's signal that
- * a remote server configured on this group is inert under the Codex provider.
- */
-function stdioMcpServersOnly(servers: Record<string, McpServerConfig>): Record<string, CodexMcpServer> {
-  const stdio: Record<string, CodexMcpServer> = {};
-  for (const [name, config] of Object.entries(servers)) {
-    if ('command' in config) {
-      stdio[name] = { command: config.command, args: config.args, env: config.env };
-    } else {
-      console.warn(`[codex] MCP server "${name}" is remote (HTTP) — unsupported by the Codex provider, skipping`);
-    }
-  }
-  return stdio;
 }
 
 function normalizeEffort(effort: string | undefined): CodexReasoningEffort | undefined {
@@ -203,7 +180,7 @@ export class CodexProvider implements AgentProvider {
     const self = this;
 
     async function* gen(): AsyncGenerator<ProviderEvent> {
-      self.runtime.writeCodexConfigToml(stdioMcpServersOnly(self.mcpServers), memorySessionHook, {
+      self.runtime.writeCodexConfigToml(self.mcpServers, memorySessionHook, {
         model: self.model,
         effort: self.effort,
       });

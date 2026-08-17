@@ -3,6 +3,8 @@ import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
 
+import type { McpServerConfig } from './types.js';
+
 // Cap Codex's project-doc loading (AGENTS.md). The host-side composer
 // (src/providers/codex-agents-md.ts) enforces the same cap at compose time —
 // host and container share no modules, so the constant lives in both.
@@ -61,12 +63,6 @@ export interface AppServer {
    * already taken the server's stderr with it.
    */
   exitHandlers: Array<(err: Error) => void>;
-}
-
-export interface CodexMcpServer {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
 }
 
 export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -405,7 +401,7 @@ export function attachCodexAutoApproval(server: AppServer): void {
 }
 
 export function writeCodexConfigToml(
-  servers: Record<string, CodexMcpServer>,
+  servers: Record<string, McpServerConfig>,
   memorySessionHook: CodexMemorySessionHook,
   opts: { model?: string; effort?: string } = {},
 ): void {
@@ -435,15 +431,35 @@ export function writeCodexConfigToml(
   lines.push('');
 
   for (const [name, config] of Object.entries(servers)) {
-    lines.push(`[mcp_servers.${name}]`);
+    const tomlName = tomlKey(name);
+    lines.push(`[mcp_servers.${tomlName}]`);
+    if (config.type === 'http') {
+      lines.push(`url = ${tomlBasicString(config.url)}`);
+      if (config.headers && Object.keys(config.headers).length > 0) {
+        lines.push(`[mcp_servers.${tomlName}.http_headers]`);
+        for (const [key, value] of Object.entries(config.headers)) {
+          lines.push(`${tomlBasicString(key)} = ${tomlBasicString(value)}`);
+        }
+      }
+      lines.push('');
+      continue;
+    }
+
     lines.push(`command = ${tomlBasicString(config.command)}`);
+    // Codex launches the stdio server in this directory natively (Stdio
+    // transport `cwd`, present since before the pinned 0.138.0). Arrives
+    // absolute — plugin-mcp.ts resolves the plugin fixed forms first.
+    // Must stay above the [.env] sub-table header or TOML re-parents it.
+    if (config.cwd) {
+      lines.push(`cwd = ${tomlBasicString(config.cwd)}`);
+    }
     if (config.args && config.args.length > 0) {
       lines.push(`args = [${config.args.map(tomlBasicString).join(', ')}]`);
     }
     if (config.env && Object.keys(config.env).length > 0) {
-      lines.push(`[mcp_servers.${name}.env]`);
+      lines.push(`[mcp_servers.${tomlName}.env]`);
       for (const [key, value] of Object.entries(config.env)) {
-        lines.push(`${key} = ${tomlBasicString(value)}`);
+        lines.push(`${tomlKey(key)} = ${tomlBasicString(value)}`);
       }
     }
     lines.push('');
@@ -524,11 +540,31 @@ export function buildCodexProcessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   return next;
 }
 
+/**
+ * Defense in depth behind the host-side charset allowlist
+ * (MCP_SERVER_NAME_RE in src/container-config.ts): configs stored before
+ * that validation existed, or hand-edited DB rows, can still carry names
+ * that are not bare TOML keys. [A-Za-z0-9_-]+ is exactly TOML's bare-key
+ * grammar, so safe names stay byte-identical, and anything else is quoted —
+ * a crafted name can never close the header and open its own
+ * [mcp_servers.*] table. Bare and quoted forms name the same table.
+ */
+function tomlKey(name: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(name) ? name : tomlBasicString(name);
+}
+
 export function tomlBasicString(value: string): string {
   if (value.includes('\n') || value.includes('\r')) {
     throw new Error(`MCP config value contains newline: ${JSON.stringify(value.slice(0, 40))}`);
   }
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  // TOML forbids raw control chars in basic strings — emit \uXXXX escapes so
+  // one stray invisible byte can't make codex reject the whole config file.
+  // The control-char replace must stay last: earlier replaces would double
+  // the backslash it emits into a literal \\uXXXX.
+  return `"${value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/[\x00-\x1f\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`)}"`;
 }
 
 function sendCodexError(server: AppServer, id: number | string, message: string, data?: unknown): void {
