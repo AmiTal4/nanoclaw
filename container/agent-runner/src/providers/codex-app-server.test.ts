@@ -93,6 +93,44 @@ describe('Codex config TOML', () => {
     expect(CODEX_APP_SERVER_ARGS).toContain('--dangerously-bypass-hook-trust');
   });
 
+  it('forwards the gateway proxy env to stdio MCP servers, letting declared env win', () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+    process.env.HOME = tmpHome;
+    process.env.HTTP_PROXY = 'http://x:tok@host.docker.internal:10255';
+    process.env.NODE_USE_ENV_PROXY = '1';
+    process.env.NO_PROXY = 'from-host';
+
+    try {
+      writeCodexConfigToml(
+        {
+          // No declared env at all — the proxy vars alone must still produce
+          // the sub-table, or the server silently bypasses the gateway.
+          bare: { command: 'mcp-arr' },
+          // Declared NO_PROXY is the documented opt-out and must not be
+          // clobbered by the host value.
+          scoped: { command: 'mcp-arr', env: { NO_PROXY: 'declared', API_KEY: 'onecli-managed' } },
+        },
+        MEMORY_SESSION_HOOK,
+        { model: 'gpt-5', effort: 'medium' },
+      );
+
+      const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
+      expect(content).toContain('[mcp_servers.bare.env]');
+      expect(content).toContain('HTTP_PROXY = "http://x:tok@host.docker.internal:10255"');
+      expect(content).toContain('NODE_USE_ENV_PROXY = "1"');
+      expect(content).toContain('API_KEY = "onecli-managed"');
+      // Per-server: `bare` declared nothing so it inherits the host NO_PROXY,
+      // while `scoped` declared its own and must keep it.
+      const scoped = content.slice(content.indexOf('[mcp_servers.scoped.env]'));
+      expect(scoped).toContain('NO_PROXY = "declared"');
+      expect(scoped).not.toContain('NO_PROXY = "from-host"');
+    } finally {
+      delete process.env.HTTP_PROXY;
+      delete process.env.NODE_USE_ENV_PROXY;
+      delete process.env.NO_PROXY;
+    }
+  });
+
   it('emits cwd for a stdio server above the env sub-table, and omits it when absent', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
     process.env.HOME = tmpHome;

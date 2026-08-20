@@ -75,6 +75,33 @@ export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high
 const CODEX_SANDBOX_MODE = 'danger-full-access';
 const CODEX_APPROVAL_POLICY = 'never';
 
+/**
+ * Proxy and CA vars a stdio MCP server needs to route through the OneCLI
+ * gateway. `NODE_USE_ENV_PROXY` is load-bearing: without it Node 22's fetch
+ * (undici) ignores every *_PROXY var, so the server connects direct and no
+ * credential injection happens. Only vars actually set are returned.
+ */
+function proxyEnvForMcpServers(): Record<string, string> {
+  const keys = [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'NO_PROXY',
+    'no_proxy',
+    'NODE_USE_ENV_PROXY',
+    'NODE_EXTRA_CA_CERTS',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+  ];
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 const CODEX_ENV_ALLOWLIST = new Set([
   'ALL_PROXY',
   'CURL_CA_BUNDLE',
@@ -85,6 +112,11 @@ const CODEX_ENV_ALLOWLIST = new Set([
   'LANG',
   'LC_ALL',
   'NODE_EXTRA_CA_CERTS',
+  // Without this, Node 22's fetch (undici) reads none of the *_PROXY vars
+  // above, so a Node-based MCP server launched by Codex connects direct and
+  // bypasses the OneCLI gateway entirely — no credential injection, and any
+  // host only resolvable by the gateway fails with a bare "fetch failed".
+  'NODE_USE_ENV_PROXY',
   'NO_PROXY',
   'PATH',
   'PNPM_HOME',
@@ -456,9 +488,16 @@ export function writeCodexConfigToml(
     if (config.args && config.args.length > 0) {
       lines.push(`args = [${config.args.map(tomlBasicString).join(', ')}]`);
     }
-    if (config.env && Object.keys(config.env).length > 0) {
+    // Codex launches stdio MCP servers with only the env written here — it
+    // does not pass the container's own environment through. Without the
+    // gateway's proxy vars a server that talks to the network connects
+    // direct, bypassing OneCLI credential injection entirely; a host only
+    // the gateway can resolve then fails with a bare "fetch failed".
+    // Declared env wins, so a server can still opt out via NO_PROXY.
+    const serverEnv = { ...proxyEnvForMcpServers(), ...(config.env ?? {}) };
+    if (Object.keys(serverEnv).length > 0) {
       lines.push(`[mcp_servers.${tomlName}.env]`);
-      for (const [key, value] of Object.entries(config.env)) {
+      for (const [key, value] of Object.entries(serverEnv)) {
         lines.push(`${tomlKey(key)} = ${tomlBasicString(value)}`);
       }
     }
