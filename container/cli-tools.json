@@ -20,5 +20,9 @@
   {
     "name": "@openai/codex",
     "version": "0.144.6"
+  },
+  {
+    "name": "mcp-arr-server",
+    "version": "1.7.3"
   }
 ]
