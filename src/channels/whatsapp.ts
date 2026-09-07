@@ -45,7 +45,6 @@ import type { EventMessageOptions, GroupMetadata, WAMessageKey, WAMessage, WASoc
 import { storeTcTokensFromIqResult } from '@whiskeysockets/baileys/lib/Utils/tc-token-utils.js';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { DATA_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -768,13 +767,13 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /** Download media from an inbound message, as base64 `data` for extractAttachmentFiles to stage. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
     ): Promise<{
-      attachments: Array<{ type: string; name: string; localPath: string }>;
+      attachments: Array<{ type: string; name: string; data: string; size: number }>;
       failures: string[];
     }> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
@@ -783,7 +782,7 @@ registerChannelAdapter('whatsapp', {
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: Array<{ type: string; name: string; data: string; size: number }> = [];
       const failures: string[] = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
@@ -799,8 +798,10 @@ registerChannelAdapter('whatsapp', {
             { reuploadRequest: sock.updateMediaMessage, logger: baileysLogger },
           );
           // documentMessage.fileName is attacker-controlled and rides through
-          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-          // this guard, a `..`-laden fileName escapes attachDir on path.join.
+          // WhatsApp's E2E channel — Meta can't sanitize it server-side.
+          // `writeSessionMessage` re-validates via `extractAttachmentFiles`
+          // before this ever touches a path.join sink, but reject early so a
+          // bad name never reaches the logs or the router either.
           const rawFilename = normalized[key].fileName;
           const fallback = `${type}-${Date.now()}${ext}`;
           const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
@@ -810,12 +811,14 @@ registerChannelAdapter('whatsapp', {
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
+          // Carry the bytes as base64 `data` rather than writing to a host
+          // dir ourselves — nothing mounts a global attachments dir into any
+          // container. `extractAttachmentFiles` (session-manager.ts) is what
+          // stages inbound attachment bytes into the session's mounted inbox
+          // once routing has picked a session; writing here would leave the
+          // file at a host path the agent's `/workspace` never reaches.
+          results.push({ type, name: filename, data: buffer.toString('base64'), size: buffer.length });
+          log.info('Media downloaded', { type, filename, size: buffer.length });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
           failures.push(type);
@@ -1265,10 +1268,8 @@ registerChannelAdapter('whatsapp', {
                 if (vcard) {
                   const safe = dn.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'contact';
                   const filename = `${safe}-${Date.now()}-${i + 1}.vcf`;
-                  const attachDir = path.join(DATA_DIR, 'attachments');
-                  fs.mkdirSync(attachDir, { recursive: true });
-                  fs.writeFileSync(path.join(attachDir, filename), vcard, 'utf8');
-                  attachments.push({ type: 'contact', name: filename, localPath: `attachments/${filename}` });
+                  const data = Buffer.from(vcard, 'utf8').toString('base64');
+                  attachments.push({ type: 'contact', name: filename, data, size: vcard.length });
                 }
               });
               const label = contactCards.length === 1 ? 'Contact card' : `${contactCards.length} contact cards`;
