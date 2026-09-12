@@ -338,8 +338,11 @@ export async function validateUpdate(
       state.skillRefresh = await refreshInstalledSkills(state.stageRoot);
       if (!state.skillRefresh.success) throw new Error('One or more installed skills failed to refresh');
       commitStageChanges(state, runtime, 'chore: refresh installed skill payloads');
-      refreshPreparedState(state, runtime);
     }
+    // Always re-sync to the stage's current HEAD, refresh or not: a retried
+    // validate follows commits made in the stage to fix what the last run
+    // caught, and cutover resets the live checkout to `targetHead`.
+    refreshPreparedState(state, runtime);
 
     const checks: string[] = [];
     runtime.runner.run('pnpm', ['install', '--frozen-lockfile'], state.stageRoot);
