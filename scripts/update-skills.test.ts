@@ -44,11 +44,24 @@ describe('installed skill detection', () => {
     write(root, 'src/channels/index.ts', "import './cli.js';\nimport './slack.js';\n");
     write(root, 'src/providers/index.ts', "import './opencode.js';\n");
     write(root, 'container/agent-runner/src/providers/index.ts', "import './claude.js';\nimport './opencode.js';\n");
+    write(root, '.claude/skills/add-slack/SKILL.md', '# Slack\n');
+    write(root, '.claude/skills/add-opencode/SKILL.md', '# OpenCode\n');
 
     expect(detectInstalledSkills(root)).toEqual([
       { name: 'opencode', skillName: 'add-opencode', kind: 'provider' },
       { name: 'slack', skillName: 'add-slack', kind: 'channel' },
     ]);
+  });
+
+  it('ignores a barrel import that no skill installs', () => {
+    // /add-slack appends its own helper module (`slack-a2a-guard`) to the
+    // channels barrel. There is no add-slack-a2a-guard skill, and reading one
+    // as an installed channel failed the whole refresh on a missing SKILL.md.
+    const root = temp('nanoclaw-skills-helper-');
+    write(root, 'src/channels/index.ts', "import './cli.js';\nimport './slack.js';\nimport './slack-a2a-guard.js';\n");
+    write(root, '.claude/skills/add-slack/SKILL.md', '# Slack\n');
+
+    expect(detectInstalledSkills(root)).toEqual([{ name: 'slack', skillName: 'add-slack', kind: 'channel' }]);
   });
 });
 
