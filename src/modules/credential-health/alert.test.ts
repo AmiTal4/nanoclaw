@@ -67,16 +67,22 @@ function makeSession(id: string, agentGroupId: string): Session {
   return session;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   resetCredentialAlertState();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true, force: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
+  const db = await initTestDb();
+  await runMigrations(db);
 
-  createAgentGroup({ id: 'ag-1', name: 'Edna', folder: 'edna', agent_provider: 'codex', created_at: now() });
-  createAgentGroup({ id: 'ag-2', name: 'Shopping', folder: 'shopping', agent_provider: 'codex', created_at: now() });
+  await createAgentGroup({ id: 'ag-1', name: 'Edna', folder: 'edna', agent_provider: 'codex', created_at: now() });
+  await createAgentGroup({
+    id: 'ag-2',
+    name: 'Shopping',
+    folder: 'shopping',
+    agent_provider: 'codex',
+    created_at: now(),
+  });
 
   upsertUser({ id: 'slack:owner-1', kind: 'slack', display_name: 'Owner', created_at: now() });
   grantRole({ user_id: 'slack:owner-1', role: 'owner', agent_group_id: null, granted_by: null, granted_at: now() });
@@ -97,8 +103,8 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   resetCredentialAlertState();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true, force: true });
 });

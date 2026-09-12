@@ -926,7 +926,7 @@ export async function buildMounts(
   // Cross-session activity journal — nested RO mount on top of the RW group
   // dir, same pattern as container.json: the agent reads its own timeline but
   // cannot rewrite it.
-  const activityLog = ensureActivityLog(agentGroup.id);
+  const activityLog = await ensureActivityLog(agentGroup.id);
   if (activityLog) {
     mounts.push({
       hostPath: activityLog,

@@ -291,3 +291,77 @@ export function sqliteFindByRouting(channelType: string, platformId: string): De
           .get(channelType, platformId) as DestinationRow | undefined);
   return row && destination(row);
 }
+
+/**
+ * Fork operations. Both are SQLite-shaped reads the base seam does not model,
+ * so they live here with the rest of the raw SQL rather than leaking
+ * `bun:sqlite` back into `src/db/` (see mailbox/registry.test.ts).
+ */
+
+export function sqliteGetMessageInBySeq(sequence: number): MessageInRow | undefined {
+  const inbound = openInboundDb();
+  try {
+    return inbound.prepare('SELECT * FROM messages_in WHERE seq = ?').get(sequence) as MessageInRow | undefined;
+  } finally {
+    inbound.close();
+  }
+}
+
+/** Ids of pending context-only rows — pull history mode acks these up front. */
+export function sqlitePendingContextRowIds(): string[] {
+  const inbound = openInboundDb();
+  let rows: Array<{ id: string }>;
+  try {
+    rows = inbound.prepare("SELECT id FROM messages_in WHERE status = 'pending' AND trigger = 0").all() as Array<{
+      id: string;
+    }>;
+  } finally {
+    inbound.close();
+  }
+  if (rows.length === 0) return [];
+  const acked = new Set(
+    (getOutboundDb().prepare('SELECT message_id FROM processing_ack').all() as Array<{ message_id: string }>).map(
+      ({ message_id }) => message_id,
+    ),
+  );
+  return rows.map(({ id }) => id).filter((id) => !acked.has(id));
+}
+
+export interface SqliteChannelHistoryFilter {
+  channelType?: string;
+  platformId?: string;
+  threadId?: string;
+  beforeSeq?: number;
+  limit: number;
+}
+
+/** Stored inbound chat rows, oldest-first, regardless of processing state. */
+export function sqliteGetChannelHistory(filter: SqliteChannelHistoryFilter): MessageInRow[] {
+  const inbound = openInboundDb();
+  try {
+    const where = ["kind IN ('chat', 'chat-sdk')"];
+    const params: Record<string, string | number> = { $limit: filter.limit };
+    if (filter.channelType !== undefined) {
+      where.push('channel_type = $channelType');
+      params.$channelType = filter.channelType;
+    }
+    if (filter.platformId !== undefined) {
+      where.push('platform_id = $platformId');
+      params.$platformId = filter.platformId;
+    }
+    if (filter.threadId !== undefined) {
+      where.push('thread_id = $threadId');
+      params.$threadId = filter.threadId;
+    }
+    if (filter.beforeSeq !== undefined) {
+      where.push('seq < $beforeSeq');
+      params.$beforeSeq = filter.beforeSeq;
+    }
+    const rows = inbound
+      .prepare(`SELECT * FROM messages_in WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT $limit`)
+      .all(params) as MessageInRow[];
+    return rows.reverse();
+  } finally {
+    inbound.close();
+  }
+}

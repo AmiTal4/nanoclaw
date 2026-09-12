@@ -465,6 +465,8 @@ describe('buildMounts agent surfaces', () => {
       '/app/.nanoclaw-session.json',
       '/workspace/agent',
       '/workspace/agent/plugins',
+      // Fork mount: the cross-session activity journal, nested RO over the group dir.
+      '/workspace/agent/activity-log.md',
       '/app/src',
       '/app/skills',
       '/workspace/extra/operator',

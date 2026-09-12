@@ -91,7 +91,7 @@ function remediation(provider: string): string {
 export async function raiseCredentialAlert(alert: CredentialAlert, nowMs: number = Date.now()): Promise<boolean> {
   const { provider, detail, session } = alert;
 
-  const group = getAgentGroup(session.agent_group_id);
+  const group = await getAgentGroup(session.agent_group_id);
   const groupName = group?.name ?? session.agent_group_id;
 
   // Log every occurrence, alert on the first per window: the log is the
@@ -112,14 +112,14 @@ export async function raiseCredentialAlert(alert: CredentialAlert, nowMs: number
   }
   lastAlertAt.set(provider, nowMs);
 
-  const approvers = pickApprover(session.agent_group_id);
+  const approvers = await pickApprover(session.agent_group_id);
   if (approvers.length === 0) {
     log.error('Credential alert has no owner or admin to notify', { provider });
     return false;
   }
 
   const originChannelType = session.messaging_group_id
-    ? (getMessagingGroup(session.messaging_group_id)?.channel_type ?? '')
+    ? ((await getMessagingGroup(session.messaging_group_id))?.channel_type ?? '')
     : '';
   const target = await pickApprovalDelivery(approvers, originChannelType);
   if (!target) {

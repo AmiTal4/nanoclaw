@@ -42,8 +42,22 @@ export type SessionRouting = SessionRoutingRecord;
 export type OutboundMessageDraft = OutboundWrite;
 export type StateValue = Omit<StateRecord, 'key'>;
 
+export interface ChannelHistoryFilter {
+  channelType?: string;
+  platformId?: string;
+  threadId?: string;
+  beforeSeq?: number;
+  limit: number;
+}
+
 export interface MailboxOperations {
   getPendingMessages(limit: number, isFirstPoll: boolean): InboundMessage[];
+  /** Fork: full inbound row by host sequence number (explicit reply threading). */
+  getMessageInBySeq(sequence: number): InboundMessage | undefined;
+  /** Fork: ids of pending context-only rows, for pull history mode's up-front ack. */
+  pendingContextRowIds(): string[];
+  /** Fork: stored inbound chat rows, oldest-first, regardless of processing state. */
+  getChannelHistory(filter: ChannelHistoryFilter): InboundMessage[];
   markMessages(ids: string[], status: ProcessingStatus): void;
   markScriptSkipped(skips: Array<{ id: string; reason: string }>): void;
   getMessageIn(id: string): InboundMessage | undefined;

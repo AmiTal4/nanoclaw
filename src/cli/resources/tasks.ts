@@ -159,7 +159,7 @@ async function createTask(args: Record<string, unknown>, ctx: CallerContext) {
   const { session, row } = await createScheduledTask(group, prepared, {
     originSessionId: ctx.caller === 'agent' ? ctx.sessionId : null,
   });
-  journalTask(group, session.id, 'scheduled', row.series_id ?? row.row_id, `next=${row.process_after}`);
+  await journalTask(group, session.id, 'scheduled', row.seriesId ?? row.id, `next=${row.processAfter}`);
   return toOutput(session, row);
 }
 
@@ -288,7 +288,7 @@ async function mutateTask(
   for (const session of await selectedSessions(args, ctx)) {
     const changed = (await withInbound(session, (db) => fn(db, id))) ?? 0;
     touched += changed;
-    if (changed > 0 && journalVerb) journalTask(session.agent_group_id, session.id, journalVerb, id);
+    if (changed > 0 && journalVerb) await journalTask(session.agent_group_id, session.id, journalVerb, id);
   }
   if (touched === 0) throw new Error(`no live task matched: ${id}`);
   return { series_id: id, touched };
@@ -373,7 +373,7 @@ async function updateTaskCommand(args: Record<string, unknown>, ctx: CallerConte
   for (const session of await selectedSessions(args, ctx)) {
     const changed = (await withInbound(session, (mailbox) => mailbox.updateTask(id, update))) ?? 0;
     touched += changed;
-    if (changed > 0) journalTask(session.agent_group_id, session.id, 'updated', id, `fields=${fields.join(',')}`);
+    if (changed > 0) await journalTask(session.agent_group_id, session.id, 'updated', id, `fields=${fields.join(',')}`);
   }
   if (touched === 0) throw new Error(`no live task matched: ${id}`);
   return { series_id: id, touched, fields };
@@ -388,7 +388,7 @@ async function cancelTaskCommand(args: Record<string, unknown>, ctx: CallerConte
   for (const session of await selectedSessions(args, ctx)) {
     const changed = (await withInbound(session, (mailbox) => mailbox.cancelTask())) ?? 0;
     touched += changed;
-    if (changed > 0) journalTask(session.agent_group_id, session.id, 'cancelled', 'all', `count=${changed}`);
+    if (changed > 0) await journalTask(session.agent_group_id, session.id, 'cancelled', 'all', `count=${changed}`);
   }
   return { cancelled: touched };
 }

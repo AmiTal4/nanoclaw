@@ -417,8 +417,8 @@ export const sendEvent: McpToolDefinition = {
         name,
         startTime,
         ...(endTime && { endTime }),
-        ...(args.description && { description: String(args.description) }),
-        ...(args.location && { location: String(args.location) }),
+        ...(args.description ? { description: String(args.description) } : {}),
+        ...(args.location ? { location: String(args.location) } : {}),
         ...(call && { call }),
       }),
     });

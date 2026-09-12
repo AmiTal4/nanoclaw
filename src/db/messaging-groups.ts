@@ -74,14 +74,14 @@ export async function getMessagingGroupByPlatform(
   );
 }
 
-export function getMessagingGroupsByPlatform(channelType: string, platformId: string): MessagingGroup[] {
-  return getDb()
-    .prepare(
-      `SELECT * FROM messaging_groups
+export function getMessagingGroupsByPlatform(channelType: string, platformId: string): Promise<MessagingGroup[]> {
+  return getDb().all<MessagingGroup>(
+    `SELECT * FROM messaging_groups
         WHERE channel_type = ? AND platform_id = ?
      ORDER BY (instance = channel_type) DESC, instance ASC`,
-    )
-    .all(channelType, platformId) as MessagingGroup[];
+    channelType,
+    platformId,
+  );
 }
 
 /**

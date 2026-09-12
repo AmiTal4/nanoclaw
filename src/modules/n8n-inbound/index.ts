@@ -148,8 +148,8 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
  * ('request_approval' for undeclared channel types) would hold every single
  * event behind an approval card.
  */
-function ensureProvisioned(entity: string, agentGroupId: string): void {
-  let mg: MessagingGroup | undefined = getMessagingGroupByPlatform(CHANNEL_TYPE, entity, CHANNEL_TYPE);
+async function ensureProvisioned(entity: string, agentGroupId: string): Promise<void> {
+  let mg: MessagingGroup | undefined = await getMessagingGroupByPlatform(CHANNEL_TYPE, entity, CHANNEL_TYPE);
 
   if (!mg) {
     const now = new Date().toISOString();
@@ -164,13 +164,13 @@ function ensureProvisioned(entity: string, agentGroupId: string): void {
       denied_at: null,
       created_at: now,
     };
-    createMessagingGroup(mg);
+    await createMessagingGroup(mg);
     log.info('n8n: auto-created messaging group', { entity, messagingGroupId: mg.id });
   }
 
-  if (getMessagingGroupAgentByPair(mg.id, agentGroupId)) return;
+  if (await getMessagingGroupAgentByPair(mg.id, agentGroupId)) return;
 
-  createMessagingGroupAgent({
+  await createMessagingGroupAgent({
     id: `mga-n8n-${entity}`,
     messaging_group_id: mg.id,
     agent_group_id: agentGroupId,
@@ -191,8 +191,8 @@ function ensureProvisioned(entity: string, agentGroupId: string): void {
   log.info('n8n: wired entity to agent group', { entity, agentGroupId, messagingGroupId: mg.id });
 }
 
-function resolveAgentGroupId(raw: string): string | null {
-  return getAgentGroup(raw)?.id ?? getAgentGroupByFolder(raw)?.id ?? null;
+async function resolveAgentGroupId(raw: string): Promise<string | null> {
+  return (await getAgentGroup(raw))?.id ?? (await getAgentGroupByFolder(raw))?.id ?? null;
 }
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, secret: string): Promise<void> {
@@ -229,13 +229,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, secre
 
   const agentGroupRaw = cfg('N8N_AGENT_GROUP');
   if (agentGroupRaw) {
-    const agentGroupId = resolveAgentGroupId(agentGroupRaw);
+    const agentGroupId = await resolveAgentGroupId(agentGroupRaw);
     if (!agentGroupId) {
       log.error('n8n: N8N_AGENT_GROUP does not resolve to an agent group', { value: agentGroupRaw });
       json(res, 500, { error: 'agent group not found' });
       return;
     }
-    ensureProvisioned(entity, agentGroupId);
+    await ensureProvisioned(entity, agentGroupId);
   }
 
   // Reply redirection. The n8n channel has no adapter, so without replyTo the

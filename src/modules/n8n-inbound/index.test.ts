@@ -33,7 +33,12 @@ const getAgentGroupByFolder = vi.fn<(...args: unknown[]) => unknown>();
 // come through readEnvFile or the module silently refuses to register. Mocked
 // to {} so the tests drive config via the process.env fallback instead of
 // whatever the real .env happens to hold.
-const readEnvFile = vi.fn<(keys: string[]) => Record<string, string>>(() => ({}));
+// vi.hoisted: `vi.mock` is hoisted above module init, and src/config.ts now
+// calls readEnvFile at import time — a plain `const` here is still in its TDZ
+// when the mock factory first runs.
+const { readEnvFile } = vi.hoisted(() => ({
+  readEnvFile: vi.fn<(keys: string[]) => Record<string, string>>(() => ({})),
+}));
 vi.mock('../../env.js', () => ({ readEnvFile: (keys: string[]) => readEnvFile(keys) }));
 
 vi.mock('../../router.js', () => ({ routeInbound: (e: InboundEvent) => routeInbound(e) }));
@@ -65,7 +70,9 @@ await startHostModules({
 });
 
 // Captured before beforeEach's clearAllMocks can wipe the import-time call.
-const envKeysAtImport = readEnvFile.mock.calls[0]?.[0] ?? [];
+// The n8n module's own import-time call. Not `calls[0]`: src/config.ts (pulled
+// in by the webhook server) now reads its own keys through readEnvFile first.
+const envKeysAtImport = readEnvFile.mock.calls.flatMap(([keys]) => keys ?? []);
 
 async function post(body: unknown, headers: Record<string, string> = {}, method = 'POST'): Promise<Response> {
   for (let attempt = 0; ; attempt++) {

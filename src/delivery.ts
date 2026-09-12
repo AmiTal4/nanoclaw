@@ -540,10 +540,10 @@ async function deliverMessage(
   clearOutbox(session.agent_group_id, session.id, msg.id);
 
   if (msg.kind === 'chat') {
-    journalMessageOut(
+    await journalMessageOut(
       session.agent_group_id,
       session.id,
-      { channelType: msg.channel_type, platformId: msg.platform_id, name: targetMg?.name },
+      { channelType: msg.channelType, platformId: msg.platformId, name: targetMg?.name },
       msg.content,
     );
   }

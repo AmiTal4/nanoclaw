@@ -46,8 +46,8 @@ export function activityLogPath(groupFolder: string): string {
   return path.join(GROUPS_DIR, groupFolder, ACTIVITY_LOG_FILENAME);
 }
 
-export function journalEnabled(agentGroupId: string): boolean {
-  return (getContainerConfig(agentGroupId)?.activity_journal ?? 'on') !== 'off';
+export async function journalEnabled(agentGroupId: string): Promise<boolean> {
+  return ((await getContainerConfig(agentGroupId))?.activity_journal ?? 'on') !== 'off';
 }
 
 /**
@@ -55,10 +55,10 @@ export function journalEnabled(agentGroupId: string): boolean {
  * container runner before mounting so the RO bind mount has a target.
  * Returns the host path, or null when disabled/unprovisioned.
  */
-export function ensureActivityLog(agentGroupId: string): string | null {
+export async function ensureActivityLog(agentGroupId: string): Promise<string | null> {
   try {
-    if (!journalEnabled(agentGroupId)) return null;
-    const group = getAgentGroup(agentGroupId);
+    if (!(await journalEnabled(agentGroupId))) return null;
+    const group = await getAgentGroup(agentGroupId);
     if (!group) return null;
     const dir = path.join(GROUPS_DIR, group.folder);
     if (!fs.existsSync(dir)) return null;
@@ -71,7 +71,7 @@ export function ensureActivityLog(agentGroupId: string): string | null {
   }
 }
 
-export function journalMessageIn(
+export async function journalMessageIn(
   agentGroupId: string,
   sessionId: string,
   msg: {
@@ -81,7 +81,7 @@ export function journalMessageIn(
     trigger?: 0 | 1;
     sourceSessionId?: string | null;
   },
-): void {
+): Promise<void> {
   const content = parseContent(msg.content);
   const sender = firstString(content.senderName, content.sender, content.author?.fullName);
   // `session=` is the RECEIVING session; `from_session=` (a2a only) is the
@@ -89,37 +89,37 @@ export function journalMessageIn(
   // the same session id on every row and wrongly concludes one peer session
   // sent them all — browser "proved" a forgery from exactly that misreading.
   const fromSession = msg.sourceSessionId ? ` from_session=${msg.sourceSessionId}` : '';
-  append(
+  await append(
     agentGroupId,
     `[in] ${chatLabel(msg.channelType, msg.platformId)}${fromSession}${sender ? ` sender=${JSON.stringify(sender)}` : ''}` +
       `${msg.trigger === 0 ? ' (context-only)' : ''} session=${sessionId} :: ${excerpt(content)}`,
   );
 }
 
-export function journalMessageOut(
+export async function journalMessageOut(
   agentGroupId: string,
   sessionId: string,
   chat: { channelType?: string | null; platformId?: string | null; name?: string | null },
   rawContent: string,
-): void {
+): Promise<void> {
   const label = chat.name || chatLabel(chat.channelType, chat.platformId);
-  append(agentGroupId, `[out] ${label} session=${sessionId} :: ${excerpt(parseContent(rawContent))}`);
+  await append(agentGroupId, `[out] ${label} session=${sessionId} :: ${excerpt(parseContent(rawContent))}`);
 }
 
-export function journalTask(
+export async function journalTask(
   agentGroupId: string,
   sessionId: string,
   verb: 'scheduled' | 'cancelled' | 'paused' | 'resumed' | 'updated',
   taskId: string,
   detail?: string,
-): void {
-  append(agentGroupId, `[task-${verb}] ${taskId}${detail ? ` ${detail}` : ''} session=${sessionId}`);
+): Promise<void> {
+  await append(agentGroupId, `[task-${verb}] ${taskId}${detail ? ` ${detail}` : ''} session=${sessionId}`);
 }
 
-function append(agentGroupId: string, line: string): void {
+async function append(agentGroupId: string, line: string): Promise<void> {
   try {
-    if (!journalEnabled(agentGroupId)) return;
-    const group = getAgentGroup(agentGroupId);
+    if (!(await journalEnabled(agentGroupId))) return;
+    const group = await getAgentGroup(agentGroupId);
     if (!group) return;
     if (!fs.existsSync(path.join(GROUPS_DIR, group.folder))) return;
     const file = activityLogPath(group.folder);

@@ -3,11 +3,9 @@
  */
 import { getConfig } from '../config.js';
 import { getAgentMailbox } from '../mailbox/index.js';
-// Fork-local readers below (pull history mode, channel history) read the
-// inbound SQLite file directly rather than through the mailbox seam: both are
-// SQLite-shaped queries the seam does not expose.
-import { getOutboundDb, openInboundDb } from '../mailbox/sqlite/connection.js';
-import type { InboundMessage } from '../mailbox/types.js';
+import type { ChannelHistoryFilter, InboundMessage } from '../mailbox/types.js';
+
+export type { ChannelHistoryFilter };
 
 export interface MessageInRow {
   id: string;
@@ -51,12 +49,8 @@ function messageRow(message: InboundMessage): MessageInRow {
 }
 
 export function getMessageInBySeq(seq: number): MessageInRow | undefined {
-  const inbound = openInboundDb();
-  try {
-    return inbound.prepare('SELECT * FROM messages_in WHERE seq = ?').get(seq) as MessageInRow | undefined;
-  } finally {
-    inbound.close();
-  }
+  const message = getAgentMailbox().operations.getMessageInBySeq(seq);
+  return message && messageRow(message);
 }
 
 // Cap on how many messages reach the agent in one prompt. Read from
@@ -80,22 +74,7 @@ function getHistoryMode(): 'push' | 'pull' {
 
 /** Ack accumulated context without deleting it from the inbound history mirror. */
 function ackContextRows(): void {
-  const inbound = openInboundDb();
-  let rows: Array<{ id: string }>;
-  try {
-    rows = inbound.prepare("SELECT id FROM messages_in WHERE status = 'pending' AND trigger = 0").all() as Array<{
-      id: string;
-    }>;
-  } finally {
-    inbound.close();
-  }
-  if (rows.length === 0) return;
-  const acked = new Set(
-    (getOutboundDb().prepare('SELECT message_id FROM processing_ack').all() as Array<{ message_id: string }>).map(
-      (row) => row.message_id,
-    ),
-  );
-  markCompleted(rows.map((row) => row.id).filter((id) => !acked.has(id)));
+  markCompleted(getAgentMailbox().operations.pendingContextRowIds());
 }
 
 /**
@@ -151,43 +130,9 @@ export function getMessageIn(id: string): MessageInRow | undefined {
   return message && messageRow(message);
 }
 
-export interface ChannelHistoryFilter {
-  channelType?: string;
-  platformId?: string;
-  threadId?: string;
-  beforeSeq?: number;
-  limit: number;
-}
-
 /** Read stored inbound chat rows regardless of their processing acknowledgement. */
 export function getChannelHistory(filter: ChannelHistoryFilter): MessageInRow[] {
-  const inbound = openInboundDb();
-  try {
-    const where = ["kind IN ('chat', 'chat-sdk')"];
-    const params: Record<string, string | number> = { $limit: filter.limit };
-    if (filter.channelType !== undefined) {
-      where.push('channel_type = $channelType');
-      params.$channelType = filter.channelType;
-    }
-    if (filter.platformId !== undefined) {
-      where.push('platform_id = $platformId');
-      params.$platformId = filter.platformId;
-    }
-    if (filter.threadId !== undefined) {
-      where.push('thread_id = $threadId');
-      params.$threadId = filter.threadId;
-    }
-    if (filter.beforeSeq !== undefined) {
-      where.push('seq < $beforeSeq');
-      params.$beforeSeq = filter.beforeSeq;
-    }
-    const rows = inbound
-      .prepare(`SELECT * FROM messages_in WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT $limit`)
-      .all(params) as MessageInRow[];
-    return rows.reverse();
-  } finally {
-    inbound.close();
-  }
+  return getAgentMailbox().operations.getChannelHistory(filter).map(messageRow);
 }
 
 /**

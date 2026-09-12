@@ -315,7 +315,7 @@ export async function writeSessionMessage(
   });
 
   if (message.kind === 'chat' && !message.id.startsWith('mirror-')) {
-    journalMessageIn(agentGroupId, sessionId, {
+    await journalMessageIn(agentGroupId, sessionId, {
       channelType: message.channelType,
       platformId: message.platformId,
       content,

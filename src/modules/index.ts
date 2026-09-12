@@ -27,7 +27,9 @@ import './interactive/index.js';
 import './permissions/index.js';
 import './agent-to-agent/index.js';
 import './self-mod/index.js';
-import './community-portal/index.js';
 // Inbound HTTP webhook for n8n. Registers a raw route on the shared webhook
 // server; inert unless N8N_INBOUND_SECRET is set.
 import './n8n-inbound/index.js';
+// Portal last: its registration test asserts it is the final host
+// start/shutdown callback the barrel contributes.
+import './community-portal/index.js';

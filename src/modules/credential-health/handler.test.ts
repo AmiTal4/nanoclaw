@@ -57,18 +57,19 @@ function collectingAdapter(): { texts: () => string[] } {
 
 let session: Session;
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   resetCredentialAlertState();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true, force: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
+  const db = await initTestDb();
+  await runMigrations(db);
 
-  createAgentGroup({ id: 'ag-1', name: 'Edna', folder: 'edna', agent_provider: null, created_at: now() });
+  await createAgentGroup({ id: 'ag-1', name: 'Edna', folder: 'edna', agent_provider: null, created_at: now() });
   // The group's real provider lives in container_configs; the session column
   // is null, which is the shape real sessions have on this install.
-  db.prepare('INSERT INTO container_configs (agent_group_id, provider, updated_at) VALUES (?, ?, ?)').run(
+  await db.run(
+    'INSERT INTO container_configs (agent_group_id, provider, updated_at) VALUES (?, ?, ?)',
     'ag-1',
     'codex',
     now(),
@@ -101,8 +102,8 @@ beforeEach(() => {
   upsertUserDm({ user_id: 'slack:owner-1', channel_type: 'slack', messaging_group_id: 'mg-dm-1', resolved_at: now() });
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   resetCredentialAlertState();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true, force: true });
 });
@@ -110,7 +111,7 @@ afterEach(() => {
 async function dispatch(content: Record<string, unknown>): Promise<void> {
   const handler = getDeliveryAction('credential_alert');
   expect(handler).toBeDefined();
-  await handler!(content, session, undefined as never);
+  await handler!(content, session);
 }
 
 describe('credential_alert handler', () => {

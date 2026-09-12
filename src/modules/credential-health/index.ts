@@ -36,7 +36,10 @@ registerDeliveryAction(
   async (content, session) => {
     // Authoritative provider: same precedence the container-runner uses to
     // decide what to actually spawn (session → container config → claude).
-    const provider = resolveProviderName(session.agent_provider, getContainerConfig(session.agent_group_id)?.provider);
+    const provider = resolveProviderName(
+      session.agent_provider,
+      (await getContainerConfig(session.agent_group_id))?.provider,
+    );
 
     const claimed = typeof content.provider === 'string' ? content.provider : '';
     if (claimed && claimed.toLowerCase() !== provider) {

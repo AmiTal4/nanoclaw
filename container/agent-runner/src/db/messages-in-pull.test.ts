@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { clearConfigForTest, setConfigForTest } from '../config.js';
-import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from './connection.js';
+import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from '../mailbox/sqlite/connection.js';
 import { getChannelHistory, getPendingMessages } from './messages-in.js';
 
 function insertChat(id: string, seq: number, trigger: 0 | 1, text: string): void {

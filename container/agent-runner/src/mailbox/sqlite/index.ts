@@ -12,10 +12,13 @@ import {
   sqliteFindCliResponse,
   sqliteFindQuestionResponse,
   sqliteGetAllDestinations,
+  sqliteGetChannelHistory,
   sqliteGetMessageIn,
+  sqliteGetMessageInBySeq,
   sqliteGetMessageIdBySeq,
   sqliteGetPendingMessages,
   sqliteGetRoutingBySeq,
+  sqlitePendingContextRowIds,
   sqliteGetSessionRouting,
   sqliteGetState,
   sqliteGetUndeliveredMessages,
@@ -37,6 +40,7 @@ import {
 } from '../model.generated.js';
 import type {
   AgentMailbox,
+  ChannelHistoryFilter,
   InboundMessage,
   MailboxOperations,
   MailboxSessionKey,
@@ -114,6 +118,22 @@ export class SqliteAgentMailbox implements AgentMailbox {
 
   getPendingMessages(limit: number, isFirstPoll: boolean): InboundMessage[] {
     return sqliteGetPendingMessages(isFirstPoll, limit).flatMap((row) => {
+      const message = parseInboundMessage(row);
+      return message ? [message] : [];
+    });
+  }
+
+  getMessageInBySeq(sequence: number): InboundMessage | undefined {
+    const row = sqliteGetMessageInBySeq(sequence);
+    return row && inboundMessage(row);
+  }
+
+  pendingContextRowIds(): string[] {
+    return sqlitePendingContextRowIds();
+  }
+
+  getChannelHistory(filter: ChannelHistoryFilter): InboundMessage[] {
+    return sqliteGetChannelHistory(filter).flatMap((row) => {
       const message = parseInboundMessage(row);
       return message ? [message] : [];
     });

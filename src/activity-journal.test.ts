@@ -37,15 +37,16 @@ const GROUPS = path.join(TEST_DIR, 'groups');
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { ensureContainerConfig, updateContainerConfigScalars } from './db/container-configs.js';
 import { journalMessageIn, journalMessageOut, journalTask, ensureActivityLog } from './activity-journal.js';
-import { resolveSession, writeSessionMessage, outboundDbPath } from './session-manager.js';
+import { resolveSession, writeSessionMessage } from './session-manager.js';
+import { outboundDbPath } from './mailbox/sqlite/paths.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
 
 function now(): string {
   return new Date().toISOString();
 }
 
-function seedGroup(withFolder = true): void {
-  createAgentGroup({
+async function seedGroup(withFolder = true): Promise<void> {
+  await createAgentGroup({
     id: 'ag-j1',
     name: 'Journal Agent',
     folder: 'journal-agent',
@@ -63,34 +64,34 @@ function logText(): string {
   return fs.readFileSync(logPath(), 'utf8');
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(GROUPS, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
+  const db = await initTestDb();
+  await runMigrations(db);
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
 describe('activity journal — module behavior', () => {
-  it('journals in/out/task lines with chat, sender, session and excerpt', () => {
-    seedGroup();
-    journalMessageIn('ag-j1', 'sess-a', {
+  it('journals in/out/task lines with chat, sender, session and excerpt', async () => {
+    await seedGroup();
+    await journalMessageIn('ag-j1', 'sess-a', {
       channelType: 'whatsapp',
       platformId: '123@s.whatsapp.net',
       content: JSON.stringify({ text: 'hello   world', senderName: 'Asaf' }),
       trigger: 1,
     });
-    journalMessageOut(
+    await journalMessageOut(
       'ag-j1',
       'sess-a',
       { channelType: 'whatsapp', platformId: '123@s.whatsapp.net', name: 'whatsapp-asaf' },
       JSON.stringify({ text: 'hi back' }),
     );
-    journalTask('ag-j1', 'sess-a', 'scheduled', 'task-1', 'next=2026-07-09T07:00:00.000Z recurrence="0 7 * * *"');
+    await journalTask('ag-j1', 'sess-a', 'scheduled', 'task-1', 'next=2026-07-09T07:00:00.000Z recurrence="0 7 * * *"');
 
     const text = logText();
     expect(text).toContain('[in] whatsapp:123@s.whatsapp.net sender="Asaf" session=sess-a :: hello world');
@@ -100,25 +101,25 @@ describe('activity journal — module behavior', () => {
     );
   });
 
-  it('respects the per-group off switch and missing group folders (no-ops, never throws)', () => {
-    seedGroup();
-    ensureContainerConfig('ag-j1');
-    updateContainerConfigScalars('ag-j1', { activity_journal: 'off' });
-    journalMessageIn('ag-j1', 'sess-a', { content: '{"text":"x"}' });
+  it('respects the per-group off switch and missing group folders (no-ops, never throws)', async () => {
+    await seedGroup();
+    await ensureContainerConfig('ag-j1');
+    await updateContainerConfigScalars('ag-j1', { activity_journal: 'off' });
+    await journalMessageIn('ag-j1', 'sess-a', { content: '{"text":"x"}' });
     expect(fs.existsSync(logPath())).toBe(false);
-    expect(ensureActivityLog('ag-j1')).toBeNull();
+    expect(await ensureActivityLog('ag-j1')).toBeNull();
 
     // unknown group and unprovisioned folder both no-op
-    journalMessageIn('ag-missing', 'sess-a', { content: '{"text":"x"}' });
-    updateContainerConfigScalars('ag-j1', { activity_journal: 'on' });
+    await journalMessageIn('ag-missing', 'sess-a', { content: '{"text":"x"}' });
+    await updateContainerConfigScalars('ag-j1', { activity_journal: 'on' });
     fs.rmSync(path.join(GROUPS, 'journal-agent'), { recursive: true });
-    journalMessageIn('ag-j1', 'sess-a', { content: '{"text":"x"}' });
+    await journalMessageIn('ag-j1', 'sess-a', { content: '{"text":"x"}' });
     expect(fs.existsSync(logPath())).toBe(false);
   });
 
-  it('truncates long excerpts on code-point boundaries', () => {
-    seedGroup();
-    journalMessageIn('ag-j1', 'sess-a', {
+  it('truncates long excerpts on code-point boundaries', async () => {
+    await seedGroup();
+    await journalMessageIn('ag-j1', 'sess-a', {
       content: JSON.stringify({ text: '🎉'.repeat(200) }),
     });
     const line = logText()
@@ -128,17 +129,17 @@ describe('activity journal — module behavior', () => {
     expect(line).not.toContain('�'); // no split surrogate pairs
   });
 
-  it('rotates in place: keeps newest entries and the same inode', () => {
-    seedGroup();
-    ensureActivityLog('ag-j1');
+  it('rotates in place: keeps newest entries and the same inode', async () => {
+    await seedGroup();
+    await ensureActivityLog('ag-j1');
     const inodeBefore = fs.statSync(logPath()).ino;
     // Excerpts cap at 120 chars (~170 bytes/line), so ~2000 lines crosses
     // the 256KB rotation threshold with room to spare.
     const filler = 'x'.repeat(200);
     for (let i = 0; i < 2000; i++) {
-      journalMessageIn('ag-j1', `sess-${i}`, { content: JSON.stringify({ text: filler }) });
+      await journalMessageIn('ag-j1', `sess-${i}`, { content: JSON.stringify({ text: filler }) });
     }
-    journalMessageIn('ag-j1', 'sess-final', { content: '{"text":"newest entry"}' });
+    await journalMessageIn('ag-j1', 'sess-final', { content: '{"text":"newest entry"}' });
     const text = logText();
     expect(fs.statSync(logPath()).size).toBeLessThan(257 * 1024);
     expect(text).toContain('newest entry');
@@ -149,9 +150,9 @@ describe('activity journal — module behavior', () => {
 });
 
 describe('activity journal — live hooks', () => {
-  it('writeSessionMessage journals inbound chat rows but skips host mirror rows', () => {
-    seedGroup();
-    createMessagingGroup({
+  it('writeSessionMessage journals inbound chat rows but skips host mirror rows', async () => {
+    await seedGroup();
+    await createMessagingGroup({
       id: 'mg-j1',
       channel_type: 'whatsapp',
       platform_id: '123@s.whatsapp.net',
@@ -160,25 +161,25 @@ describe('activity journal — live hooks', () => {
       unknown_sender_policy: 'public',
       created_at: now(),
     });
-    const { session } = resolveSession('ag-j1', 'mg-j1', null, 'shared');
+    const { session } = await resolveSession('ag-j1', 'mg-j1', null, 'shared');
 
-    writeSessionMessage('ag-j1', session.id, {
+    await writeSessionMessage('ag-j1', session.id, {
       id: 'msg-1',
       kind: 'chat',
       timestamp: now(),
       platformId: '123@s.whatsapp.net',
       channelType: 'whatsapp',
       content: JSON.stringify({ text: 'routed message', senderName: 'Asaf' }),
-      trigger: 1,
+      trigger: true,
     });
-    writeSessionMessage('ag-j1', session.id, {
+    await writeSessionMessage('ag-j1', session.id, {
       id: 'mirror-out-9',
       kind: 'chat',
       timestamp: now(),
       platformId: '123@s.whatsapp.net',
       channelType: 'whatsapp',
       content: JSON.stringify({ text: 'mirrored copy', sender: 'Journal Agent', origin: 'self-mirror' }),
-      trigger: 0,
+      trigger: false,
       sourceSessionId: 'sess-elsewhere',
     });
 
@@ -188,8 +189,8 @@ describe('activity journal — live hooks', () => {
   });
 
   it('delivery journals [out] with the wired chat name on successful sends', async () => {
-    seedGroup();
-    createMessagingGroup({
+    await seedGroup();
+    await createMessagingGroup({
       id: 'mg-j1',
       channel_type: 'whatsapp',
       platform_id: '123@s.whatsapp.net',
@@ -198,7 +199,7 @@ describe('activity journal — live hooks', () => {
       unknown_sender_policy: 'public',
       created_at: now(),
     });
-    const { session } = resolveSession('ag-j1', 'mg-j1', null, 'shared');
+    const { session } = await resolveSession('ag-j1', 'mg-j1', null, 'shared');
     const outDb = new Database(outboundDbPath('ag-j1', session.id));
     outDb
       .prepare(
