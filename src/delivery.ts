@@ -266,9 +266,7 @@ async function drainSession(session: Session): Promise<void> {
           sessionId: session.id,
           preview: text.slice(0, 80),
         });
-        await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
-          mailbox.markDelivered(msg.id, null),
-        );
+        await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => mailbox.markDelivered(msg.id, null));
         delivered.add(msg.id);
         continue;
       }
