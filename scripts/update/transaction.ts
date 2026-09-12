@@ -328,10 +328,18 @@ export async function validateUpdate(
   assertClean(runtime, state.stageRoot, 'Staging worktree');
 
   try {
-    state.skillRefresh = await refreshInstalledSkills(state.stageRoot);
-    if (!state.skillRefresh.success) throw new Error('One or more installed skills failed to refresh');
-    commitStageChanges(state, runtime, 'chore: refresh installed skill payloads');
-    refreshPreparedState(state, runtime);
+    // Refresh ONCE per transaction. Validation is retried — a build error gets
+    // fixed in the stage and validate runs again — and re-copying the registry
+    // payloads on a retry would silently discard whatever reconciliation was
+    // done on top of the first copy (a fork's own edits to a skill-owned file,
+    // hand-merged after the refresh overwrote them). The refresh is a
+    // one-way import, so it has to be idempotent at the transaction level.
+    if (state.skillRefresh?.success !== true) {
+      state.skillRefresh = await refreshInstalledSkills(state.stageRoot);
+      if (!state.skillRefresh.success) throw new Error('One or more installed skills failed to refresh');
+      commitStageChanges(state, runtime, 'chore: refresh installed skill payloads');
+      refreshPreparedState(state, runtime);
+    }
 
     const checks: string[] = [];
     runtime.runner.run('pnpm', ['install', '--frozen-lockfile'], state.stageRoot);
