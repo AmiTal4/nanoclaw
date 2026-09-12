@@ -11,17 +11,33 @@ export interface CommandRunner {
 }
 
 export function createCommandRunner(): CommandRunner {
-  const run = (command: string, args: string[], cwd?: string): string =>
-    execFileSync(command, args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Node's default maxBuffer is 1 MiB; a full vitest run on a large repo
-      // exceeds it and the whole validate step dies as `spawnSync pnpm
-      // ENOBUFS` with the tests never judged. 64 MiB is far above any real
-      // build/test output while still bounding a runaway.
-      maxBuffer: 64 * 1024 * 1024,
-    }).trim();
+  const run = (command: string, args: string[], cwd?: string): string => {
+    try {
+      return execFileSync(command, args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Node's default maxBuffer is 1 MiB; a full vitest run on a large repo
+        // exceeds it and the whole validate step dies as `spawnSync pnpm
+        // ENOBUFS` with the tests never judged. 64 MiB is far above any real
+        // build/test output while still bounding a runaway.
+        maxBuffer: 64 * 1024 * 1024,
+      }).trim();
+    } catch (err) {
+      // Node's own message is just `Command failed: <cmd>`, which throws away
+      // the compiler/test output that says WHY — leaving an operator (or the
+      // automatic rollback's report) with nothing to act on. Re-throw with the
+      // tail of the child's own output attached.
+      const failed = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
+      const output = [failed.stdout, failed.stderr]
+        .map((part) => part?.toString().trim())
+        .filter(Boolean)
+        .join('\n')
+        .slice(-4000);
+      if (output) failed.message = `${failed.message}\n${output}`;
+      throw failed;
+    }
+  };
   return {
     run,
     tryRun(command, args, cwd) {
