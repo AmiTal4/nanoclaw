@@ -2,7 +2,7 @@
  * WhatsApp channel adapter (v2) — native Baileys v7 implementation.
  *
  * Implements ChannelAdapter directly (no Chat SDK bridge) using
- * @whiskeysockets/baileys 7.0.0-rc.9 (pinned — last release, unmaintained).
+ * @whiskeysockets/baileys 7.0.0-rc13 (pinned).
  * Ports proven v1 infrastructure: getMessage fallback, outgoing queue,
  * group metadata cache, LID mapping, reconnection with backoff.
  *
@@ -16,6 +16,7 @@
  * - Otherwise → QR code (printed to log)
  * Subsequent restarts reuse the saved session automatically.
  */
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 // Named import (not default) — pino's .d.ts under NodeNext resolution
@@ -32,14 +33,18 @@ import {
   DisconnectReason,
   fetchLatestWaWebVersion,
   downloadMediaMessage,
+  decryptPollVote,
+  getAggregateVotesInPollMessage,
+  getKeyAuthor,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   useMultiFileAuthState,
+  jidNormalizedUser,
 } from '@whiskeysockets/baileys';
-import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
+import type { EventMessageOptions, GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
+import { storeTcTokensFromIqResult } from '@whiskeysockets/baileys/lib/Utils/tc-token-utils.js';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { DATA_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -54,6 +59,27 @@ import type {
 } from './adapter.js';
 
 const baileysLogger = pino({ level: 'silent' });
+
+/** Pull the FN (formatted name) line out of a vCard. */
+function parseVCardName(vcard: string): string | undefined {
+  const m = vcard.match(/^FN:(.+)$/m);
+  return m ? m[1].trim() : undefined;
+}
+
+/** Pull all TEL numbers out of a vCard (value after the last colon). */
+function parseVCardTels(vcard: string): string[] {
+  const tels: string[] = [];
+  for (const line of vcard.split(/\r?\n/)) {
+    if (/^TEL/i.test(line)) {
+      const idx = line.lastIndexOf(':');
+      if (idx >= 0) {
+        const t = line.slice(idx + 1).trim();
+        if (t) tels.push(t);
+      }
+    }
+  }
+  return tels;
+}
 
 /**
  * Fetch the latest WhatsApp Web version. Baileys' built-in
@@ -107,6 +133,69 @@ const GROUP_METADATA_CACHE_TTL_MS = 60_000; // 1 min for outbound sends
 const SENT_MESSAGE_CACHE_MAX = 256;
 const RECONNECT_DELAY_MS = 5000;
 const PENDING_QUESTIONS_MAX = 64;
+
+export function buildWhatsAppPollPayload(
+  name: string,
+  values: unknown[],
+  selectableCount = 1,
+): { poll: { name: string; values: string[]; selectableCount: number } } {
+  return {
+    poll: {
+      name,
+      values: values.map((value) => String(value)),
+      selectableCount: selectableCount > 0 ? selectableCount : 1,
+    },
+  };
+}
+
+export function buildWhatsAppEventPayload(content: Record<string, unknown>): { event: EventMessageOptions } {
+  const event: EventMessageOptions = {
+    name: content.name as string,
+    startDate: new Date(content.startTime as string),
+  };
+  if (content.endTime) event.endDate = new Date(content.endTime as string);
+  if (content.description) event.description = content.description as string;
+  if (content.location) event.location = { name: content.location as string };
+  if (content.call === 'audio' || content.call === 'video') event.call = content.call;
+  return { event };
+}
+
+export function buildWhatsAppContactPayload(
+  vcard: string,
+  displayName = 'Contact',
+): { contacts: { displayName: string; contacts: Array<{ displayName: string; vcard: string }> } } {
+  return { contacts: { displayName, contacts: [{ displayName, vcard }] } };
+}
+
+export function decryptPollVoteWithJidCandidates<T = ReturnType<typeof decryptPollVote>>(args: {
+  vote: Parameters<typeof decryptPollVote>[0];
+  pollEncKey: Uint8Array;
+  pollMsgId: string;
+  voterCandidates: string[];
+  creatorCandidates: string[];
+  decrypt?: (vote: Parameters<typeof decryptPollVote>[0], options: Parameters<typeof decryptPollVote>[1]) => T;
+}): { vote: T; voterJid: string; creatorJid: string } | undefined {
+  const decrypt = args.decrypt ?? (decryptPollVote as unknown as NonNullable<typeof args.decrypt>);
+  for (const creatorJid of args.creatorCandidates) {
+    for (const voterJid of args.voterCandidates) {
+      try {
+        return {
+          vote: decrypt!(args.vote, {
+            pollEncKey: args.pollEncKey,
+            pollCreatorJid: creatorJid,
+            pollMsgId: args.pollMsgId,
+            voterJid,
+          }),
+          voterJid,
+          creatorJid,
+        };
+      } catch {
+        // LID/phone JID mismatches fail authentication; try the next pair.
+      }
+    }
+  }
+  return undefined;
+}
 
 /** Normalize an option label to a slash command: "Approve" → "/approve" */
 function optionToCommand(option: string): string {
@@ -312,6 +401,106 @@ export function computeIsMention(shared: boolean, isGroup: boolean, botMentioned
 }
 
 /**
+ * Subset of a normalized Baileys message carrying the per-type `contextInfo`
+ * that hosts a *reply/quote* (quotedMessage + participant + stanzaId).
+ * Structural so the helper and its tests don't need the full proto shape.
+ */
+type QuotedMessageContent = {
+  conversation?: string | null;
+  extendedTextMessage?: { text?: string | null } | null;
+  imageMessage?: { caption?: string | null } | null;
+  videoMessage?: { caption?: string | null } | null;
+  documentMessage?: { caption?: string | null; fileName?: string | null } | null;
+  audioMessage?: unknown;
+  stickerMessage?: unknown;
+  contactMessage?: unknown;
+  contactsArrayMessage?: unknown;
+  locationMessage?: unknown;
+  pollCreationMessage?: unknown;
+  pollCreationMessageV2?: unknown;
+  pollCreationMessageV3?: unknown;
+};
+type QuoteContextInfo = {
+  quotedMessage?: QuotedMessageContent | null;
+  participant?: string | null;
+  stanzaId?: string | null;
+} | null;
+type QuotedContextSource = {
+  extendedTextMessage?: { contextInfo?: QuoteContextInfo } | null;
+  imageMessage?: { contextInfo?: QuoteContextInfo } | null;
+  videoMessage?: { contextInfo?: QuoteContextInfo } | null;
+  documentMessage?: { contextInfo?: QuoteContextInfo } | null;
+  audioMessage?: { contextInfo?: QuoteContextInfo } | null;
+  stickerMessage?: { contextInfo?: QuoteContextInfo } | null;
+};
+
+const QUOTED_TEXT_MAX = 300;
+
+/** Best-effort one-line summary of a quoted message's body (text or a type tag). */
+export function summarizeQuotedMessage(qm: QuotedMessageContent | null | undefined): string {
+  if (!qm) return '';
+  let text =
+    qm.conversation ||
+    qm.extendedTextMessage?.text ||
+    qm.imageMessage?.caption ||
+    qm.videoMessage?.caption ||
+    qm.documentMessage?.caption ||
+    '';
+  if (!text) {
+    if (qm.imageMessage) text = '[image]';
+    else if (qm.videoMessage) text = '[video]';
+    else if (qm.audioMessage) text = '[voice message]';
+    else if (qm.documentMessage)
+      text = qm.documentMessage.fileName ? `[document: ${qm.documentMessage.fileName}]` : '[document]';
+    else if (qm.stickerMessage) text = '[sticker]';
+    else if (qm.contactMessage || qm.contactsArrayMessage) text = '[contact]';
+    else if (qm.locationMessage) text = '[location]';
+    else if (qm.pollCreationMessage || qm.pollCreationMessageV2 || qm.pollCreationMessageV3) text = '[poll]';
+    else text = '[message]';
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  return text.length > QUOTED_TEXT_MAX ? text.slice(0, QUOTED_TEXT_MAX - 1) + '…' : text;
+}
+
+/**
+ * Extract WhatsApp reply/quote context for the agent. When a user replies to an
+ * earlier message, WhatsApp carries the quoted message in
+ * `contextInfo.quotedMessage` (+ `participant` = its author, `stanzaId` = its
+ * id) on the text/caption-bearing message types. We surface it as
+ * `content.replyTo = { sender, text, id }`, which the agent-runner formatter
+ * renders as `<quoted_message from="sender">text</quoted_message>` with a
+ * `reply_to="id"` attribute (container/agent-runner/src/formatter.ts).
+ *
+ * Exported for unit testing. `resolveName` turns a non-bot author JID into a
+ * display string (the caller passes a sync, best-effort resolver).
+ */
+export function extractQuotedContext(
+  normalized: QuotedContextSource,
+  opts: { botPhoneJid: string | undefined; botLidUser: string | undefined; resolveName: (jid: string) => string },
+): { sender: string; text: string; id?: string } | undefined {
+  const ctx =
+    normalized.extendedTextMessage?.contextInfo ??
+    normalized.imageMessage?.contextInfo ??
+    normalized.videoMessage?.contextInfo ??
+    normalized.documentMessage?.contextInfo ??
+    normalized.audioMessage?.contextInfo ??
+    normalized.stickerMessage?.contextInfo;
+  if (!ctx || (!ctx.quotedMessage && !ctx.stanzaId)) return undefined;
+
+  const botLidJid = opts.botLidUser ? `${opts.botLidUser}@lid` : undefined;
+  const participant = ctx.participant || '';
+  const bare = participant.split(':')[0];
+  const isBotAuthor = (!!opts.botPhoneJid && bare === opts.botPhoneJid) || (!!botLidJid && bare === botLidJid);
+  const sender = isBotAuthor ? ASSISTANT_NAME : participant ? opts.resolveName(participant) : 'Unknown';
+
+  return {
+    sender,
+    text: summarizeQuotedMessage(ctx.quotedMessage),
+    ...(ctx.stanzaId ? { id: ctx.stanzaId } : {}),
+  };
+}
+
+/**
  * Normalize a tag of the bot's LID into `@<assistant name>` so mention text
  * matches name-pattern triggers. Dedicated mode only: on a shared number the
  * LID belongs to the human owner, and rewriting a friend's tag of the owner
@@ -419,6 +608,7 @@ registerChannelAdapter('whatsapp', {
 
     // State
     let sock: WASocket;
+    let authKeys: any;
     let connected = false;
     let shuttingDown = false;
     let setupConfig: ChannelSetup;
@@ -435,6 +625,11 @@ registerChannelAdapter('whatsapp', {
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
 
+    // Poll vote accumulation: pollMsgId -> (voterJid -> latest decrypted update).
+    // WhatsApp sends each voter's full current selection per change, so we keep
+    // the latest per voter and re-aggregate to produce a running tally.
+    const pollVotes = new Map<string, Map<string, any>>();
+
     // Group metadata cache with TTL
     const groupMetadataCache = new Map<string, { metadata: GroupMetadata; expiresAt: number }>();
 
@@ -447,6 +642,11 @@ registerChannelAdapter('whatsapp', {
         options: NormalizedOption[];
       }
     >();
+
+    // Polls that ARE an ask_question / approval card: pollMsgId → question meta.
+    // A vote on one of these is mapped back to its option value and fired via
+    // onAction (the approval pipeline) — NOT forwarded to the agent as a tally.
+    const questionPolls = new Map<string, { questionId: string; options: NormalizedOption[]; chatJid: string }>();
 
     // Group sync tracking
     let lastGroupSync = 0;
@@ -567,13 +767,13 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /** Download media from an inbound message, as base64 `data` for extractAttachmentFiles to stage. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
     ): Promise<{
-      attachments: Array<{ type: string; name: string; localPath: string }>;
+      attachments: Array<{ type: string; name: string; data: string; size: number }>;
       failures: string[];
     }> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
@@ -582,7 +782,7 @@ registerChannelAdapter('whatsapp', {
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: Array<{ type: string; name: string; data: string; size: number }> = [];
       const failures: string[] = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
@@ -598,8 +798,10 @@ registerChannelAdapter('whatsapp', {
             { reuploadRequest: sock.updateMediaMessage, logger: baileysLogger },
           );
           // documentMessage.fileName is attacker-controlled and rides through
-          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-          // this guard, a `..`-laden fileName escapes attachDir on path.join.
+          // WhatsApp's E2E channel — Meta can't sanitize it server-side.
+          // `writeSessionMessage` re-validates via `extractAttachmentFiles`
+          // before this ever touches a path.join sink, but reject early so a
+          // bad name never reaches the logs or the router either.
           const rawFilename = normalized[key].fileName;
           const fallback = `${type}-${Date.now()}${ext}`;
           const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
@@ -609,12 +811,14 @@ registerChannelAdapter('whatsapp', {
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
+          // Carry the bytes as base64 `data` rather than writing to a host
+          // dir ourselves — nothing mounts a global attachments dir into any
+          // container. `extractAttachmentFiles` (session-manager.ts) is what
+          // stages inbound attachment bytes into the session's mounted inbox
+          // once routing has picked a session; writing here would leave the
+          // file at a host path the agent's `/workspace` never reaches.
+          results.push({ type, name: filename, data: buffer.toString('base64'), size: buffer.length });
+          log.info('Media downloaded', { type, filename, size: buffer.length });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
           failures.push(type);
@@ -623,6 +827,36 @@ registerChannelAdapter('whatsapp', {
       return { attachments: results, failures };
     }
 
+    async function ensureTcToken(jid: string): Promise<void> {
+      if (!connected || !authKeys) return;
+      if (!jid.endsWith('@s.whatsapp.net')) return;
+
+      const normalized = jidNormalizedUser(jid);
+      const getLIDForPN = async (pn: string) => {
+        const data = await authKeys.get('lid-mapping', [pn.replace('@s.whatsapp.net', '')]);
+        const lid = data[pn.replace('@s.whatsapp.net', '')];
+        return lid ? `${lid}@lid` : null;
+      };
+
+      const { resolveTcTokenJid } = await import('@whiskeysockets/baileys/lib/Utils/tc-token-utils.js');
+      const storageJid = await resolveTcTokenJid(normalized, getLIDForPN);
+      const existing = await authKeys.get('tctoken', [storageJid]);
+      if (existing[storageJid]?.token?.length) return;
+
+      try {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const result = await (sock as any).issuePrivacyTokens([normalized], timestamp);
+        await storeTcTokensFromIqResult({
+          result,
+          fallbackJid: normalized,
+          keys: authKeys,
+          getLIDForPN,
+        });
+        log.info('Pre-issued tctoken for new contact', { jid: normalized });
+      } catch (err) {
+        log.warn('Failed to pre-issue tctoken', { jid: normalized, err });
+      }
+    }
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
       if (!connected) {
         outgoingQueue.push({ jid, text, mentions });
@@ -630,6 +864,7 @@ registerChannelAdapter('whatsapp', {
         return;
       }
       try {
+        await ensureTcToken(jid);
         const payload: { text: string; mentions?: string[] } = { text };
         if (mentions && mentions.length > 0) payload.mentions = mentions;
         const sent = await sock.sendMessage(jid, payload);
@@ -655,11 +890,12 @@ registerChannelAdapter('whatsapp', {
 
       const version = await resolveWaWebVersion();
 
+      authKeys = makeCacheableSignalKeyStore(state.keys, baileysLogger);
       sock = makeWASocket({
         version,
         auth: {
           creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
+          keys: authKeys,
         },
         printQRInTerminal: false,
         logger: baileysLogger,
@@ -838,6 +1074,157 @@ registerChannelAdapter('whatsapp', {
             // Translate LID → phone JID using v7's alt JID from extractAddressingContext
             const chatJid = await translateJid(rawJid, msg.key.remoteJidAlt);
 
+            // Poll votes arrive as an encrypted pollUpdateMessage. Baileys 7's
+            // auto-decrypt path is commented out upstream, so we decrypt manually
+            // (replicating its logic), accumulate the latest selection per voter,
+            // and forward a running tally to the agent. DM polls wake the agent;
+            // group poll votes are recorded without waking it. Polls sent before
+            // the last restart aren't in the in-memory cache and can't be decoded.
+            const pollUpdate = normalized.pollUpdateMessage || msg.message.pollUpdateMessage;
+            if (pollUpdate?.pollCreationMessageKey?.id && pollUpdate.vote) {
+              const creationKey = pollUpdate.pollCreationMessageKey;
+              const pollId = creationKey.id!;
+              const pollMessage = sentMessageCache.get(pollId);
+              if (!pollMessage) {
+                log.info('Poll vote for unknown/evicted poll — skipping', { pollId });
+                continue;
+              }
+              try {
+                const pollEncKey = pollMessage.messageContextInfo?.messageSecret;
+                if (!pollEncKey) {
+                  log.warn('Poll has no messageSecret — cannot decrypt votes', { pollId });
+                  continue;
+                }
+                const meId = jidNormalizedUser(sock.user?.id || '');
+                const botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : undefined;
+                // The poll-vote key/AAD derivation is sensitive to the exact JID
+                // form (phone vs LID) the voter's client used. Baileys' own
+                // (disabled) code assumes one form and breaks under LID
+                // addressing, so try the candidate forms until one authenticates.
+                const rawVoter = msg.key.participant || msg.key.remoteJid || '';
+                const voterCandidates = [
+                  ...new Set(
+                    [
+                      getKeyAuthor(msg.key, meId),
+                      rawVoter,
+                      msg.key.participantAlt,
+                      msg.key.remoteJidAlt,
+                      await translateJid(rawVoter, msg.key.participantAlt || msg.key.remoteJidAlt || undefined),
+                    ].filter((j): j is string => !!j),
+                  ),
+                ];
+                const creatorCandidates = [
+                  ...new Set(
+                    [getKeyAuthor(creationKey, meId), meId, sock.user?.id, botLid].filter((j): j is string => !!j),
+                  ),
+                ];
+                const decrypted = decryptPollVoteWithJidCandidates({
+                  vote: pollUpdate.vote,
+                  pollEncKey,
+                  pollMsgId: pollId,
+                  voterCandidates,
+                  creatorCandidates,
+                });
+                if (!decrypted) {
+                  log.warn('Poll vote: no JID combination authenticated', {
+                    pollId,
+                    voterCandidates,
+                    creatorCandidates,
+                  });
+                  continue;
+                }
+                const voteMsg = decrypted.vote;
+                const voterJid = decrypted.voterJid;
+                log.info('Poll vote decrypted', {
+                  pollId,
+                  creator: decrypted.creatorJid,
+                  voter: voterJid,
+                });
+
+                // Is this poll an ask_question / approval card? If so, map the
+                // vote to its option value and answer via onAction — and never
+                // forward it to the agent as a "📊 Poll update" tally.
+                const question = questionPolls.get(pollId);
+                if (question) {
+                  // WhatsApp identifies a selected option by SHA-256 of its label.
+                  const selected = new Set((voteMsg.selectedOptions || []).map((b) => Buffer.from(b).toString('hex')));
+                  const matched = question.options.find((o) =>
+                    selected.has(createHash('sha256').update(o.label).digest('hex')),
+                  );
+                  if (matched) {
+                    const voterName = msg.pushName || voterJid.split('@')[0];
+                    const answerer = voterJid.endsWith('@lid') ? await translateJid(voterJid) : voterJid;
+                    setupConfig.onAction(question.questionId, matched.value, answerer);
+                    questionPolls.delete(pollId);
+                    pollVotes.delete(pollId);
+                    await sendRawMessage(chatJid, `${matched.selectedLabel} by ${voterName}`);
+                    log.info('Question answered via poll', {
+                      pollId,
+                      questionId: question.questionId,
+                      value: matched.value,
+                      voterName,
+                    });
+                  }
+                  // Deselect (empty selection) leaves the card open for a real vote.
+                  continue;
+                }
+
+                let voters = pollVotes.get(pollId);
+                if (!voters) {
+                  voters = new Map();
+                  pollVotes.set(pollId, voters);
+                }
+                const tsRaw = pollUpdate.senderTimestampMs as unknown;
+                const senderTimestampMs = tsRaw ? Number((tsRaw as { toString(): string }).toString()) : Date.now();
+                voters.set(voterJid, { pollUpdateMessageKey: msg.key, vote: voteMsg, senderTimestampMs });
+
+                const aggregated = getAggregateVotesInPollMessage({
+                  message: pollMessage,
+                  pollUpdates: Array.from(voters.values()),
+                });
+                const pollName =
+                  pollMessage.pollCreationMessage?.name ||
+                  pollMessage.pollCreationMessageV2?.name ||
+                  pollMessage.pollCreationMessageV3?.name ||
+                  'Poll';
+                const isPollGroup = chatJid.endsWith('@g.us');
+                const lines = await Promise.all(
+                  aggregated.map(async (opt) => {
+                    const names = await Promise.all(
+                      (opt.voters || []).map(async (v) => {
+                        const phone = v.endsWith('@lid') ? await translateJid(v) : v;
+                        return phone.split('@')[0];
+                      }),
+                    );
+                    const count = names.length;
+                    return `• ${opt.name} — ${count} vote${count === 1 ? '' : 's'}${count > 0 ? ` (${names.join(', ')})` : ''}`;
+                  }),
+                );
+                const text = `📊 Poll update — "${pollName}":\n${lines.join('\n')}`;
+                const pollInbound: InboundMessage = {
+                  id: `wa-pollvote-${pollId}-${Date.now()}`,
+                  kind: 'chat',
+                  isMention: !isPollGroup,
+                  isGroup: isPollGroup,
+                  content: {
+                    text,
+                    sender: chatJid,
+                    senderName: 'WhatsApp Poll',
+                    fromMe: false,
+                    isBotMessage: false,
+                    isGroup: isPollGroup,
+                    chatJid,
+                  },
+                  timestamp: new Date().toISOString(),
+                };
+                setupConfig.onInbound(chatJid, null, pollInbound);
+                log.info('Poll vote forwarded', { pollId, options: aggregated.length });
+              } catch (err) {
+                log.warn('Failed to decrypt/forward poll vote', { pollId, err });
+              }
+              continue;
+            }
+
             const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
             const isGroup = chatJid.endsWith('@g.us');
 
@@ -862,6 +1249,33 @@ registerChannelAdapter('whatsapp', {
             // sent even when it couldn't be fetched — instead of silently
             // dropping the attachment (or the whole message, if uncaptioned).
             content = appendMediaFailureNote(content, failures);
+
+            // Inbound contact cards (contactMessage / contactsArrayMessage):
+            // surface a summary line and stage each raw .vcf into the inbox so
+            // the agent can read, save, or forward it.
+            const contactCards: Array<{ displayName?: string | null; vcard?: string | null }> = [];
+            if (normalized.contactMessage) contactCards.push(normalized.contactMessage);
+            if (normalized.contactsArrayMessage?.contacts) {
+              contactCards.push(...normalized.contactsArrayMessage.contacts);
+            }
+            if (contactCards.length > 0) {
+              const summaries: string[] = [];
+              contactCards.forEach((c, i) => {
+                const vcard = c.vcard || '';
+                const dn = c.displayName || (vcard && parseVCardName(vcard)) || 'Contact';
+                const tels = vcard ? parseVCardTels(vcard) : [];
+                summaries.push(`${dn}${tels.length > 0 ? ` — ${tels.join(', ')}` : ''}`);
+                if (vcard) {
+                  const safe = dn.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'contact';
+                  const filename = `${safe}-${Date.now()}-${i + 1}.vcf`;
+                  const data = Buffer.from(vcard, 'utf8').toString('base64');
+                  attachments.push({ type: 'contact', name: filename, data, size: vcard.length });
+                }
+              });
+              const label = contactCards.length === 1 ? 'Contact card' : `${contactCards.length} contact cards`;
+              const summaryText = `📇 ${label}: ${summaries.join('; ')}`;
+              content = content ? `${content}\n${summaryText}` : summaryText;
+            }
 
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
@@ -919,6 +1333,22 @@ registerChannelAdapter('whatsapp', {
                   !hasMentionPills(normalized) &&
                   isBotTypedMention(content, ASSISTANT_NAME, botPhoneJid)));
 
+            // Surface WhatsApp reply/quote context so the agent sees which
+            // message was referenced (rendered as <quoted_message> by the
+            // agent-runner formatter from content.replyTo). Names for non-bot
+            // quoted authors are best-effort: LID→phone via the sync map, else
+            // the JID digits (Baileys doesn't carry the quoted author's name).
+            const resolveQuotedName = (jid: string): string => {
+              const lidUser = jid.endsWith('@lid') ? jid.split('@')[0].split(':')[0] : '';
+              const phoneJid = lidUser && lidToPhoneMap[lidUser] ? lidToPhoneMap[lidUser] : jid;
+              return phoneJid.split('@')[0].split(':')[0];
+            };
+            const quoted = extractQuotedContext(normalized, {
+              botPhoneJid,
+              botLidUser,
+              resolveName: resolveQuotedName,
+            });
+
             const inbound: InboundMessage = {
               id: msg.key.id || `wa-${Date.now()}`,
               kind: 'chat',
@@ -934,6 +1364,7 @@ registerChannelAdapter('whatsapp', {
                 text: content,
                 sender,
                 senderName,
+                ...(quoted && { replyTo: quoted }),
                 ...(attachments.length > 0 && { attachments }),
                 fromMe,
                 isBotMessage,
@@ -994,7 +1425,9 @@ registerChannelAdapter('whatsapp', {
       ): Promise<string | undefined> {
         const content = message.content as Record<string, unknown>;
 
-        // Ask question → text with slash command replies
+        // Ask question / approval → native single-select WhatsApp poll.
+        // The approver taps an option; the vote is mapped back to its value and
+        // answered via onAction (see the pollUpdate handler) — no typed /approve.
         if (content.type === 'ask_question' && content.questionId && content.options) {
           const questionId = content.questionId as string;
           const title = content.title as string;
@@ -1005,17 +1438,46 @@ registerChannelAdapter('whatsapp', {
           }
           const options: NormalizedOption[] = normalizeOptions(content.options as never);
 
-          const optionLines = options.map((o) => `  ${optionToCommand(o.label)}`).join('\n');
-          const text = `*${title}*\n\n${question}\n\nReply with:\n${optionLines}`;
-          const msgId = await sendRawMessage(platformId, text);
-          if (msgId) {
-            pendingQuestions.set(platformId, { questionId, options });
-            if (pendingQuestions.size > PENDING_QUESTIONS_MAX) {
-              const oldest = pendingQuestions.keys().next().value!;
-              pendingQuestions.delete(oldest);
+          // WhatsApp polls require 2–12 options; outside that, fall back to text.
+          if (options.length < 2 || options.length > 12) {
+            const optionLines = options.map((o) => `  ${optionToCommand(o.label)}`).join('\n');
+            const text = `*${title}*\n\n${question}\n\nReply with:\n${optionLines}`;
+            const msgId = await sendRawMessage(platformId, text);
+            if (msgId) {
+              pendingQuestions.set(platformId, { questionId, options });
+              if (pendingQuestions.size > PENDING_QUESTIONS_MAX) {
+                const oldest = pendingQuestions.keys().next().value!;
+                pendingQuestions.delete(oldest);
+              }
             }
+            return msgId;
           }
-          return msgId;
+
+          // Poll name carries only the prompt — fold title + question into it.
+          const name = (question ? `${title}\n\n${question}` : title).slice(0, 255);
+          try {
+            await ensureTcToken(platformId);
+            const sent = await sock.sendMessage(platformId, {
+              poll: {
+                name,
+                values: options.map((o) => o.label.slice(0, 100)),
+                selectableCount: 1,
+              },
+            });
+            const msgId = sent?.key?.id ?? undefined;
+            if (msgId && sent?.message) {
+              sentMessageCache.set(msgId, sent.message);
+              questionPolls.set(msgId, { questionId, options, chatJid: platformId });
+              if (questionPolls.size > PENDING_QUESTIONS_MAX) {
+                const oldest = questionPolls.keys().next().value!;
+                questionPolls.delete(oldest);
+              }
+            }
+            return msgId;
+          } catch (err) {
+            log.error('Failed to send ask_question poll', { platformId, questionId, err });
+            return;
+          }
         }
 
         // Reaction → emoji on a message
@@ -1033,6 +1495,60 @@ registerChannelAdapter('whatsapp', {
           return;
         }
 
+        // Poll -> native WhatsApp poll
+        if (content.operation === 'poll' && content.name && Array.isArray(content.values)) {
+          try {
+            await ensureTcToken(platformId);
+            const selectableCount =
+              typeof content.selectableCount === 'number' && content.selectableCount > 0 ? content.selectableCount : 1;
+            const sent = await sock.sendMessage(
+              platformId,
+              buildWhatsAppPollPayload(content.name as string, content.values as unknown[], selectableCount),
+            );
+            if (sent?.key?.id && sent.message) {
+              sentMessageCache.set(sent.key.id, sent.message);
+            }
+            return sent?.key?.id ?? undefined;
+          } catch (err) {
+            log.error('Failed to send poll', { platformId, err });
+            return;
+          }
+        }
+
+        // Event -> native WhatsApp event card
+        if (content.operation === 'event' && content.name && content.startTime) {
+          try {
+            await ensureTcToken(platformId);
+            const sent = await sock.sendMessage(platformId, buildWhatsAppEventPayload(content));
+            if (sent?.key?.id && sent.message) {
+              sentMessageCache.set(sent.key.id, sent.message);
+            }
+            return sent?.key?.id ?? undefined;
+          } catch (err) {
+            log.error('Failed to send event', { platformId, err });
+            return;
+          }
+        }
+
+        // Contact card -> native WhatsApp contact (vCard)
+        if (content.operation === 'contact' && content.vcard) {
+          try {
+            await ensureTcToken(platformId);
+            const displayName = (content.displayName as string) || 'Contact';
+            const sent = await sock.sendMessage(
+              platformId,
+              buildWhatsAppContactPayload(content.vcard as string, displayName),
+            );
+            if (sent?.key?.id && sent.message) {
+              sentMessageCache.set(sent.key.id, sent.message);
+            }
+            return sent?.key?.id ?? undefined;
+          } catch (err) {
+            log.error('Failed to send contact', { platformId, err });
+            return;
+          }
+        }
+
         // Normal message (with optional file attachments)
         const text = (content.markdown as string) || (content.text as string);
         const hasFiles = message.files && message.files.length > 0;
@@ -1041,6 +1557,7 @@ registerChannelAdapter('whatsapp', {
 
         // Send file attachments (first file gets the caption, rest are captionless)
         if (hasFiles) {
+          await ensureTcToken(platformId);
           let captionUsed = false;
           for (const file of message.files!) {
             try {

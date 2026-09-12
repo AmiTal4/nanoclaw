@@ -36,6 +36,7 @@ import { getProviderContainerConfig } from './provider-container-registry.js';
 import './index.js'; // the real host provider barrel
 import type { ContainerConfig } from '../container-config.js';
 import type { AgentGroup, Session } from '../types.js';
+import type { VolumeMount } from './provider-container-registry.js';
 
 function group(id: string, folder: string): AgentGroup {
   return { id, name: folder, folder, agent_provider: null, created_at: new Date().toISOString() } as AgentGroup;
@@ -109,7 +110,7 @@ describe('codex host contribution against real core', () => {
     // create a missing file mountpoint inside a virtiofs dir mount (exit 125
     // on first spawn). Red here = the pre-create line was dropped.
     expect(fs.existsSync(path.join(codexShared, 'auth.json'))).toBe(true);
-    const codexMount = contribution.mounts?.find((m) => m.containerPath === '/home/node/.codex');
+    const codexMount = contribution.mounts?.find((m: VolumeMount) => m.containerPath === '/home/node/.codex');
     expect(codexMount).toMatchObject({ hostPath: codexShared, readonly: false });
 
     // AGENTS.md composed from the real DB row — MCP instructions included.
