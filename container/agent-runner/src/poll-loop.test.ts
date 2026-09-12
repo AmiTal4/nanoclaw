@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
@@ -465,6 +468,67 @@ describe('error result with no <message> envelope', () => {
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain('was not delivered');
+  });
+});
+
+describe('harness file events (Codex-generated images)', () => {
+  let outboxDir: string;
+  let imagePath: string;
+
+  beforeEach(() => {
+    outboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-outbox-'));
+    process.env.NANOCLAW_OUTBOX_DIR = outboxDir;
+    imagePath = path.join(outboxDir, 'exec-abc.png');
+    fs.writeFileSync(imagePath, 'PNG');
+  });
+
+  afterEach(() => {
+    delete process.env.NANOCLAW_OUTBOX_DIR;
+    fs.rmSync(outboxDir, { recursive: true, force: true });
+  });
+
+  function fileThenResult(filePath: string): AgentQuery {
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' };
+      yield { type: 'file', path: filePath };
+      yield { type: 'result', text: '' };
+    }
+    return { push: () => {}, end: () => {}, events: events(), abort: () => {} };
+  }
+
+  it('delivers the file to the reply destination even when the final text is empty', async () => {
+    const pushes: string[] = [];
+    const query = fileThenResult(imagePath);
+    query.push = (m: string) => pushes.push(m);
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'codex', undefined, 'prompt', undefined);
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].platform_id).toBe('chan-1');
+    expect(out[0].in_reply_to).toBe('m1');
+    expect(JSON.parse(out[0].content)).toEqual({ text: '', files: ['exec-abc.png'] });
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('logs and skips an unreadable file without failing the turn', async () => {
+    await processQuery(
+      fileThenResult(path.join(outboxDir, 'missing.png')),
+      ERR_ROUTING,
+      ['m1'],
+      'codex',
+      undefined,
+      'prompt',
+      undefined,
+    );
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('does not deliver harness files from a task run (one-door)', async () => {
+    await processQuery(fileThenResult(imagePath), TASK_ROUTING, ['t1'], 'codex', undefined, 'prompt', undefined);
+
+    expect(getUndeliveredMessages().filter((m) => m.kind === 'chat')).toHaveLength(0);
   });
 });
 

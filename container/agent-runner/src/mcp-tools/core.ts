@@ -13,6 +13,7 @@ import { findByName, getAllDestinations } from '../destinations.js';
 import { getChannelHistory, getMessageIn, getMessageInBySeq, type MessageInRow } from '../db/messages-in.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getCurrentInReplyTo, getCurrentReplyRoute } from '../db/session-state.js';
+import { enqueueFileOut } from '../outbox.js';
 import { resolveDestinationThread } from '../db/session-routing.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -189,21 +190,16 @@ export const sendFile: McpToolDefinition = {
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
 
-    const id = generateId();
-    const filename = (args.filename as string) || path.basename(resolvedPath);
-
-    const outboxDir = path.join('/workspace/outbox', id);
-    fs.mkdirSync(outboxDir, { recursive: true });
-    fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
-
-    await writeMessageOut({
-      id,
-      in_reply_to: getCurrentInReplyTo(),
-      kind: 'chat',
-      platform_id: routing.platform_id,
-      channel_type: routing.channel_type,
-      thread_id: routing.thread_id,
-      content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+    const { id, filename } = await enqueueFileOut({
+      srcPath: resolvedPath,
+      routing: {
+        platform_id: routing.platform_id,
+        channel_type: routing.channel_type,
+        thread_id: routing.thread_id,
+        in_reply_to: getCurrentInReplyTo(),
+      },
+      text: (args.text as string) || '',
+      filename: (args.filename as string) || undefined,
     });
 
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);

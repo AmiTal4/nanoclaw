@@ -31,6 +31,7 @@ import {
 import { stripHarnessTagArtifacts } from './harness-tag-strip.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
 import { ErrorGate } from './error-throttle.js';
+import { enqueueFileOut } from './outbox.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 import type { ProviderRuntimeContract } from './provider-contracts/registry.js';
 
@@ -674,6 +675,8 @@ export async function processQuery(
           midTurnSent += scan.delivered;
           midTurnTail = scan.tail;
         }
+      } else if (event.type === 'file') {
+        await deliverHarnessFile(event.path, routing);
       } else if (event.type === 'result') {
         // A result — with or without text — means the turn is done. Mark
         // the initial batch completed now so the host sweep doesn't see
@@ -810,6 +813,39 @@ function notifyExchangeComplete(
     hook(exchange);
   } catch (err) {
     log(`onExchangeComplete failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Deliver a harness-generated file (e.g. a Codex-rendered image) to the
+ * batch's reply destination. The model never sends these itself — its native
+ * client already rendered them — so the loop delivers them via the same outbox
+ * path send_file uses. Best-effort: a missing reply destination or an
+ * unreadable file logs and is skipped rather than failing the whole turn.
+ * Task runs are one-door (only explicit tools deliver), so they skip.
+ */
+async function deliverHarnessFile(filePath: string, routing: RoutingContext): Promise<void> {
+  if (routing.taskRun) {
+    log(`Not delivering harness file ${filePath}: task runs deliver only via explicit tools`);
+    return;
+  }
+  if (!routing.platformId || !routing.channelType) {
+    log(`Dropping harness file ${filePath}: batch has no reply destination`);
+    return;
+  }
+  try {
+    const { filename, seq } = await enqueueFileOut({
+      srcPath: filePath,
+      routing: {
+        platform_id: routing.platformId,
+        channel_type: routing.channelType,
+        thread_id: routing.threadId,
+        in_reply_to: routing.inReplyTo,
+      },
+    });
+    log(`Delivered harness file #${seq} → ${routing.channelType}:${routing.platformId} (${filename})`);
+  } catch (err) {
+    log(`Failed to deliver harness file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
