@@ -26,16 +26,40 @@
  * bridge (#2911). `@chat-adapter/whatsapp` hardcodes name = 'whatsapp', so the bridge's
  * channelType is 'whatsapp' — shared with the native Baileys adapter. The factory must pass
  * `instance: 'whatsapp-cloud'` so the registry keys the two apart (`instance ?? channelType`)
- * instead of last-write-wins. We build the adapter through its registered factory (the real
- * code path) with credentials mocked in, since the factory returns null when they are absent.
+ * instead of last-write-wins. We build the adapter through the exported registration object
+ * used by self-registration, with credentials mocked in since the factory otherwise returns null.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// The factory reads credentials via readEnvFile (off disk) and returns null when
+// they are missing. Supply dummy values so the factory builds the real bridge —
+// createWhatsAppAdapter constructs purely (no network) once all four are present.
+vi.mock('../env.js', () => ({
+  readEnvFile: () => ({
+    WHATSAPP_ACCESS_TOKEN: 'test-access-token',
+    WHATSAPP_PHONE_NUMBER_ID: 'test-phone-number-id',
+    WHATSAPP_APP_SECRET: 'test-app-secret',
+    WHATSAPP_VERIFY_TOKEN: 'test-verify-token',
+  }),
+}));
 
 import { getRegisteredChannelNames } from './channel-registry.js';
 import './index.js'; // the real barrel — triggers every channel's self-registration
+import { whatsappCloudRegistration } from './whatsapp-cloud.js';
 
 describe('whatsapp-cloud channel registration', () => {
   it('registers whatsapp-cloud via the channel barrel', () => {
     expect(getRegisteredChannelNames()).toContain('whatsapp-cloud');
+  });
+
+  it('builds under a distinct instance key while keeping channelType whatsapp', async () => {
+    const adapter = await whatsappCloudRegistration.factory();
+    expect(adapter).not.toBeNull();
+
+    // instance keeps this bridge off the native Baileys adapter's 'whatsapp'
+    // registry key (last-write-wins collision, #2911).
+    expect(adapter!.instance).toBe('whatsapp-cloud');
+    // channelType stays the semantic platform key, shared with native whatsapp.
+    expect(adapter!.channelType).toBe('whatsapp');
   });
 });

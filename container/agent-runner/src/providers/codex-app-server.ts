@@ -67,6 +67,17 @@ export interface AppServer {
 
 export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
+const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+
+export function normalizeCodexEffort(effort: string | undefined): CodexReasoningEffort | undefined {
+  const normalized = effort?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!SUPPORTED_EFFORTS.has(normalized as CodexReasoningEffort)) {
+    throw new Error(`Unsupported Codex reasoning effort: ${effort}`);
+  }
+  return normalized as CodexReasoningEffort;
+}
+
 // Codex runs unrestricted inside the container. NanoClaw's container isolation and
 // the OneCLI allow-list are the security boundary — not Codex's own sandbox/approval
 // primitives (which can't run here anyway: workspace-write/read-only need user
@@ -74,33 +85,6 @@ export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high
 // defaults in config.toml; threads and turns inherit them, never override them.
 const CODEX_SANDBOX_MODE = 'danger-full-access';
 const CODEX_APPROVAL_POLICY = 'never';
-
-/**
- * Proxy and CA vars a stdio MCP server needs to route through the OneCLI
- * gateway. `NODE_USE_ENV_PROXY` is load-bearing: without it Node 22's fetch
- * (undici) ignores every *_PROXY var, so the server connects direct and no
- * credential injection happens. Only vars actually set are returned.
- */
-function proxyEnvForMcpServers(): Record<string, string> {
-  const keys = [
-    'HTTP_PROXY',
-    'HTTPS_PROXY',
-    'http_proxy',
-    'https_proxy',
-    'NO_PROXY',
-    'no_proxy',
-    'NODE_USE_ENV_PROXY',
-    'NODE_EXTRA_CA_CERTS',
-    'SSL_CERT_FILE',
-    'SSL_CERT_DIR',
-  ];
-  const out: Record<string, string> = {};
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value) out[key] = value;
-  }
-  return out;
-}
 
 const CODEX_ENV_ALLOWLIST = new Set([
   'ALL_PROXY',
@@ -112,11 +96,6 @@ const CODEX_ENV_ALLOWLIST = new Set([
   'LANG',
   'LC_ALL',
   'NODE_EXTRA_CA_CERTS',
-  // Without this, Node 22's fetch (undici) reads none of the *_PROXY vars
-  // above, so a Node-based MCP server launched by Codex connects direct and
-  // bypasses the OneCLI gateway entirely — no credential injection, and any
-  // host only resolvable by the gateway fails with a bare "fetch failed".
-  'NODE_USE_ENV_PROXY',
   'NO_PROXY',
   'PATH',
   'PNPM_HOME',
@@ -134,31 +113,7 @@ const CODEX_ENV_ALLOWLIST = new Set([
   'https_proxy',
   'no_proxy',
   'CODEX_HOME',
-  // Codex is Rust/tracing — this is the only lever over how much it writes to
-  // its log sink. Allowlisted so an operator can raise it for debugging; see
-  // CODEX_DEFAULT_RUST_LOG for why it is turned down by default.
-  'RUST_LOG',
 ]);
-
-/**
- * Default verbosity for Codex's log database (`$CODEX_HOME/logs_*.sqlite`).
- *
- * Codex defaults to TRACE, and nothing ever reads the result. On this install
- * one group's log DB reached 108 MB — 88% of it TRACE, with single
- * `rmcp::service` rows carrying whole MCP payload bodies (~100 KB each), and
- * five Codex groups compounding it. Nothing prunes the file, so it grows for
- * the life of the group.
- *
- * `info` keeps what is actually diagnostic — including the `Refreshing token`
- * / 401 lines that identify an expired vault credential — while dropping the
- * payload dumps. `rmcp` and the HTTP-client crates are pinned lower still:
- * they are the bulk of the volume and their INFO/DEBUG output is connection
- *-pool chatter, not something an operator debugs from.
- *
- * Overridable: set RUST_LOG on the host and it passes through the allowlist
- * untouched, so `RUST_LOG=trace` still gets you everything when debugging.
- */
-const CODEX_DEFAULT_RUST_LOG = 'info,rmcp=warn,hyper_util=warn,h2=warn';
 
 export interface ThreadParams {
   model?: string;
@@ -328,6 +283,8 @@ export async function startOrResumeCodexThread(
     cwd: params.cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX_MODE,
+    // App-server ignores the CLI hook-trust flag; apply it to every thread.
+    config: { bypass_hook_trust: true },
     baseInstructions: params.baseInstructions,
     developerInstructions: params.developerInstructions,
     personality: 'friendly',
@@ -432,37 +389,119 @@ export function attachCodexAutoApproval(server: AppServer): void {
   });
 }
 
+/**
+ * Who writes config.toml / hooks.json before a query. The provider's own
+ * direct write (in CodexProvider.query) runs only while this is false. The
+ * runtime contract module (provider-contracts/codex.ts) flips it to true when
+ * it loads, because on that core the contract's beforeQuery performs the
+ * write — so each query writes the files exactly once on either core.
+ */
+export const codexRuntimeOwnership = { contractOwnsRuntimeFiles: false };
+
 export function writeCodexConfigToml(
   servers: Record<string, McpServerConfig>,
   memorySessionHook: CodexMemorySessionHook,
-  opts: { model?: string; effort?: string } = {},
+  opts: { model?: string; effort?: string; fastMode?: boolean } = {},
 ): void {
   const codexConfigDir = path.join(process.env.HOME || '/home/node', '.codex');
   fs.mkdirSync(codexConfigDir, { recursive: true });
   const configTomlPath = path.join(codexConfigDir, 'config.toml');
   const hooksJsonPath = path.join(codexConfigDir, 'hooks.json');
+  fs.writeFileSync(configTomlPath, renderCodexConfigToml(buildCodexConfigPlan(servers, opts)));
+  const hooksExist = fs.existsSync(hooksJsonPath);
+  fs.writeFileSync(
+    hooksJsonPath,
+    reconcileCodexHooksJson(
+      hooksExist ? fs.readFileSync(hooksJsonPath, 'utf-8') : '',
+      memorySessionHook,
+      hooksJsonPath,
+      hooksExist,
+    ),
+  );
+}
 
+export interface CodexConfigPlan {
+  executionPolicy: {
+    sandboxMode: string;
+    approvalPolicy: string;
+    projectDocumentMaxBytes: number;
+  };
+  inference: { model?: string; effort?: string; fastMode?: boolean };
+  memory: { memories: false; useMemories: false; generateMemories: false };
+  mcpServers: Record<string, McpServerConfig>;
+}
+
+// Per-capability plan functions. The runtime contract probes these same
+// functions, and the lifecycle callback uses the direct writer below.
+
+export function codexExecutionPolicySection(): CodexConfigPlan['executionPolicy'] {
+  return {
+    sandboxMode: CODEX_SANDBOX_MODE,
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    projectDocumentMaxBytes: CODEX_PROJECT_DOC_MAX_BYTES,
+  };
+}
+
+/**
+ * The contract path receives the raw core input and normalizes here; the
+ * legacy provider path normalizes in its constructor and passes the result
+ * through `buildCodexConfigPlan` untouched — both land on the same bytes.
+ */
+export function codexInferenceSection(input: {
+  model?: string;
+  effort?: string;
+  speed?: string;
+}): CodexConfigPlan['inference'] {
+  return {
+    model: input.model,
+    effort: normalizeCodexEffort(input.effort),
+    fastMode: input.speed === 'fast' || undefined,
+  };
+}
+
+export function codexMemorySection(): CodexConfigPlan['memory'] {
+  return { memories: false, useMemories: false, generateMemories: false };
+}
+
+export function codexMcpServersSection(input: Record<string, McpServerConfig>): CodexConfigPlan['mcpServers'] {
+  return input;
+}
+
+export function buildCodexConfigPlan(
+  servers: Record<string, McpServerConfig>,
+  opts: { model?: string; effort?: string; fastMode?: boolean } = {},
+): CodexConfigPlan {
+  return {
+    executionPolicy: codexExecutionPolicySection(),
+    inference: opts,
+    memory: codexMemorySection(),
+    mcpServers: codexMcpServersSection(servers),
+  };
+}
+
+export function renderCodexConfigToml(plan: CodexConfigPlan): string {
   // Instance-level defaults the app-server reads on startup; threads/turns inherit them.
   const lines: string[] = [
-    `sandbox_mode = ${tomlBasicString(CODEX_SANDBOX_MODE)}`,
-    `approval_policy = ${tomlBasicString(CODEX_APPROVAL_POLICY)}`,
-    `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    `sandbox_mode = ${tomlBasicString(plan.executionPolicy.sandboxMode)}`,
+    `approval_policy = ${tomlBasicString(plan.executionPolicy.approvalPolicy)}`,
+    `project_doc_max_bytes = ${plan.executionPolicy.projectDocumentMaxBytes}`,
   ];
-  if (opts.model) lines.push(`model = ${tomlBasicString(opts.model)}`);
-  if (opts.effort) lines.push(`model_reasoning_effort = ${tomlBasicString(opts.effort)}`);
+  if (plan.inference.model) lines.push(`model = ${tomlBasicString(plan.inference.model)}`);
+  if (plan.inference.effort) lines.push(`model_reasoning_effort = ${tomlBasicString(plan.inference.effort)}`);
+  if (plan.inference.fastMode) lines.push('service_tier = "fast"');
   lines.push('');
 
   // NanoClaw owns persistent memory across providers. Keep Codex's native
   // memory disabled even if its defaults or a user-level config change.
   lines.push('[features]');
-  lines.push('memories = false');
+  lines.push(`memories = ${plan.memory.memories}`);
   lines.push('');
   lines.push('[memories]');
-  lines.push('use_memories = false');
-  lines.push('generate_memories = false');
+  lines.push(`use_memories = ${plan.memory.useMemories}`);
+  lines.push(`generate_memories = ${plan.memory.generateMemories}`);
   lines.push('');
 
-  for (const [name, config] of Object.entries(servers)) {
+  for (const [name, config] of Object.entries(plan.mcpServers)) {
     const tomlName = tomlKey(name);
     lines.push(`[mcp_servers.${tomlName}]`);
     if (config.type === 'http') {
@@ -488,24 +527,27 @@ export function writeCodexConfigToml(
     if (config.args && config.args.length > 0) {
       lines.push(`args = [${config.args.map(tomlBasicString).join(', ')}]`);
     }
-    // Codex launches stdio MCP servers with only the env written here — it
-    // does not pass the container's own environment through. Without the
-    // gateway's proxy vars a server that talks to the network connects
-    // direct, bypassing OneCLI credential injection entirely; a host only
-    // the gateway can resolve then fails with a bare "fetch failed".
-    // Declared env wins, so a server can still opt out via NO_PROXY.
-    const serverEnv = { ...proxyEnvForMcpServers(), ...(config.env ?? {}) };
-    if (Object.keys(serverEnv).length > 0) {
+    if (config.env && Object.keys(config.env).length > 0) {
       lines.push(`[mcp_servers.${tomlName}.env]`);
-      for (const [key, value] of Object.entries(serverEnv)) {
+      for (const [key, value] of Object.entries(config.env)) {
         lines.push(`${tomlKey(key)} = ${tomlBasicString(value)}`);
       }
     }
     lines.push('');
   }
 
-  fs.writeFileSync(configTomlPath, lines.join('\n'));
-  const hooksConfig = readHooksConfig(hooksJsonPath);
+  return lines.join('\n');
+}
+
+export function reconcileCodexHooksJson(
+  current: string,
+  memorySessionHook: CodexMemorySessionHook,
+  filePath = 'Codex hooks config',
+  exists = Boolean(current),
+): string {
+  const parsed: unknown = exists ? JSON.parse(current) : {};
+  if (!isRecord(parsed)) throw new Error(`${filePath} must contain a JSON object`);
+  const hooksConfig = parsed;
   const hooks = objectProperty(hooksConfig, 'hooks');
   const sessionStart = arrayProperty(hooks, 'SessionStart');
 
@@ -518,16 +560,7 @@ export function writeCodexConfigToml(
     hooks: [{ type: 'command', command: memorySessionHook.command, timeout: 10 }],
   });
   hooks.SessionStart = nextSessionStart;
-  fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2) + '\n');
-}
-
-function readHooksConfig(filePath: string): Record<string, unknown> {
-  if (!fs.existsSync(filePath)) return {};
-  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  if (!isRecord(parsed)) {
-    throw new Error(`${filePath} must contain a JSON object`);
-  }
-  return parsed;
+  return JSON.stringify(hooksConfig, null, 2) + '\n';
 }
 
 function objectProperty(parent: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -573,9 +606,6 @@ export function buildCodexProcessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   }
   if (!next.CODEX_HOME) next.CODEX_HOME = next.HOME ? path.join(next.HOME, '.codex') : '/home/node/.codex';
   if (!next.HOME) next.HOME = '/home/node';
-  // Only when the operator hasn't chosen a level — an explicit RUST_LOG (from
-  // the allowlist above) always wins.
-  if (!next.RUST_LOG) next.RUST_LOG = CODEX_DEFAULT_RUST_LOG;
   return next;
 }
 

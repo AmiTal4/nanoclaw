@@ -11,3 +11,4 @@ import './whatsapp.js';
 import './telegram.js';
 import './whatsapp-cloud.js';
 import './slack.js';
+import './slack-a2a-guard.js';
