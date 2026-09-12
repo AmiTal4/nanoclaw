@@ -10,7 +10,7 @@
   },
   {
     "name": "@anthropic-ai/claude-code",
-    "version": "2.1.197",
+    "version": "2.1.257",
     "onlyBuilt": true
   },
   {
@@ -19,7 +19,7 @@
   },
   {
     "name": "@openai/codex",
-    "version": "0.144.6"
+    "version": "0.146.0"
   },
   {
     "name": "mcp-arr-server",

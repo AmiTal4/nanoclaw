@@ -14,9 +14,8 @@ import http from 'http';
 
 import type { Chat } from 'chat';
 
+import { getWebhookPort } from './config.js';
 import { log } from './log.js';
-
-const DEFAULT_PORT = 3000;
 
 interface WebhookEntry {
   chat: Chat;
@@ -110,72 +109,85 @@ export function registerWebhookHandler(path: string, handler: RawWebhookHandler)
 function ensureServer(): void {
   if (server) return;
 
-  const port = parseInt(process.env.WEBHOOK_PORT || String(DEFAULT_PORT), 10);
+  const port = getWebhookPort();
 
-  server = http.createServer(async (req, res) => {
-    const url = req.url || '/';
+  const candidate = http.createServer((req, res) => {
+    void (async () => {
+      const url = req.url || '/';
 
-    // Route: /webhook/{adapterName}
-    const match = url.match(/^\/webhook\/([^/?]+)/);
-    if (!match) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-      return;
-    }
-
-    const adapterName = match[1];
-
-    try {
-      // Raw routes take priority — the handler writes the response itself.
-      const rawHandler = rawRoutes.get(adapterName);
-      if (rawHandler) {
-        await rawHandler(req, res);
-        return;
-      }
-
-      const entry = routes.get(adapterName);
-      if (!entry) {
+      // Route: /webhook/{adapterName}
+      const match = url.match(/^\/webhook\/([^/?]+)/);
+      if (!match) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end(`Unknown adapter: ${adapterName}`);
+        res.end('Not found');
         return;
       }
 
-      const webReq = await toWebRequest(req);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const webhooks = entry.chat.webhooks as Record<string, (r: Request, opts?: any) => Promise<Response>>;
-      const handler = webhooks[entry.adapterName];
-      const webRes = await handler(webReq, {
-        waitUntil: (p: Promise<unknown>) => {
-          p.catch(() => {});
-        },
-      });
-      if (webRes.status >= 400) {
-        const bodyText = await webRes
-          .clone()
-          .text()
-          .catch(() => '');
-        const slackTs = req.headers['x-slack-request-timestamp'];
-        log.warn('Webhook request rejected', {
-          adapter: adapterName,
-          method: req.method,
-          status: webRes.status,
-          responseBody: bodyText.slice(0, 200),
-          hasSlackSignature: Boolean(req.headers['x-slack-signature']),
-          slackTimestampSkewSec:
-            typeof slackTs === 'string' && slackTs !== '' ? Math.round(Date.now() / 1000 - Number(slackTs)) : undefined,
+      const adapterName = match[1];
+
+      try {
+        // Raw routes take priority — the handler writes the response itself.
+        const rawHandler = rawRoutes.get(adapterName);
+        if (rawHandler) {
+          await rawHandler(req, res);
+          return;
+        }
+
+        const entry = routes.get(adapterName);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end(`Unknown adapter: ${adapterName}`);
+          return;
+        }
+
+        const webReq = await toWebRequest(req);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const webhooks = entry.chat.webhooks as Record<string, (r: Request, opts?: any) => Promise<Response>>;
+        const handler = webhooks[entry.adapterName];
+        const webRes = await handler(webReq, {
+          waitUntil: (p: Promise<unknown>) => {
+            void p.catch(() => {});
+          },
         });
+        if (webRes.status >= 400) {
+          const bodyText = await webRes
+            .clone()
+            .text()
+            .catch(() => '');
+          const slackTs = req.headers['x-slack-request-timestamp'];
+          log.warn('Webhook request rejected', {
+            adapter: adapterName,
+            method: req.method,
+            status: webRes.status,
+            responseBody: bodyText.slice(0, 200),
+            hasSlackSignature: Boolean(req.headers['x-slack-signature']),
+            slackTimestampSkewSec:
+              typeof slackTs === 'string' && slackTs !== ''
+                ? Math.round(Date.now() / 1000 - Number(slackTs))
+                : undefined,
+          });
+        }
+        await fromWebResponse(webRes, res);
+      } catch (err) {
+        log.error('Webhook handler error', { adapter: adapterName, url: req.url, err });
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal Server Error');
+        }
       }
-      await fromWebResponse(webRes, res);
-    } catch (err) {
-      log.error('Webhook handler error', { adapter: adapterName, url: req.url, err });
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Internal Server Error');
-      }
-    }
+    })();
   });
 
-  server.listen(port, '0.0.0.0', () => {
+  // Keep the candidate as the singleton while listen is pending so concurrent
+  // registrations cannot create competing listeners. A failed listen must
+  // release that singleton, though, or later registrations can never retry.
+  server = candidate;
+  candidate.on('error', (err) => {
+    if (!candidate.listening && server === candidate) server = null;
+    log.error('Webhook server error', { port, err });
+  });
+
+  candidate.listen(port, '0.0.0.0', () => {
     log.info('Webhook server started', { port, adapters: [...routes.keys()] });
   });
 }

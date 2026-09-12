@@ -12,8 +12,8 @@ import path from 'path';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getChannelHistory, getMessageIn, getMessageInBySeq, type MessageInRow } from '../db/messages-in.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
-import { getCurrentInReplyTo } from '../db/session-state.js';
-import { getSessionRouting } from '../db/session-routing.js';
+import { getCurrentInReplyTo, getCurrentReplyRoute } from '../db/session-state.js';
+import { resolveDestinationThread } from '../db/session-routing.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -50,10 +50,10 @@ function destinationList(): string {
 /**
  * Resolve a destination name to routing fields.
  *
- * Look up the explicitly named destination. If it resolves to
- * the same channel the session is bound to, the session's thread_id is
- * preserved so replies land in the correct thread. Otherwise thread_id
- * is null (a cross-destination send starts a new conversation).
+ * A channel destination is threaded like the poll loop's explicit deliveries:
+ * the thread of the message being answered (the published reply stamp) when it
+ * came from that channel, else that channel's latest inbound thread. An agent
+ * destination never carries a thread.
  */
 function resolveRouting(
   to: string,
@@ -62,6 +62,9 @@ function resolveRouting(
   const dest = findByName(to);
   if (!dest) return { error: `Unknown destination "${to}". Known: ${destinationList()}` };
   if (dest.type === 'channel') {
+    // Explicit thread control (fork feature): a numeric inbound message id
+    // roots the reply on that message; "new" forces a top-level post. Omitted,
+    // the destination's own thread resolution below decides.
     if (thread && thread !== 'new') {
       const seq = Number(thread);
       if (!Number.isInteger(seq) || seq <= 0) return { error: `thread must be "new" or a numeric message id` };
@@ -96,19 +99,14 @@ function resolveRouting(
       }
       return { error: `Message #${seq} is not in a thread and cannot root one on this channel` };
     }
-    // If the destination is the same channel the session is bound to,
-    // preserve the thread_id so replies land in the correct thread.
-    const session = getSessionRouting();
-    const threadId =
-      thread === 'new'
-        ? null
-        : session.channel_type === dest.channelType && session.platform_id === dest.platformId
-          ? session.thread_id
-          : null;
+    if (thread === 'new') {
+      return { channel_type: dest.channelType!, platform_id: dest.platformId!, thread_id: null, resolvedName: to };
+    }
     return {
       channel_type: dest.channelType!,
       platform_id: dest.platformId!,
-      thread_id: threadId,
+      thread_id:
+        resolveDestinationThread(dest.channelType!, dest.platformId!, getCurrentReplyRoute())?.threadId ?? null,
       resolvedName: to,
     };
   }
@@ -148,7 +146,7 @@ export const sendMessage: McpToolDefinition = {
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
-    const seq = writeMessageOut({
+    const seq = await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -198,7 +196,7 @@ export const sendFile: McpToolDefinition = {
     fs.mkdirSync(outboxDir, { recursive: true });
     fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
 
-    writeMessageOut({
+    await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -240,7 +238,7 @@ export const editMessage: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,
@@ -281,7 +279,7 @@ export const addReaction: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,

@@ -7,7 +7,7 @@
  */
 import fs from 'fs';
 
-import type { McpServerConfig } from './providers/types.js';
+import type { McpServerConfig, ProviderSpeed } from './providers/types.js';
 
 const CONFIG_PATH = '/workspace/agent/container.json';
 
@@ -23,6 +23,7 @@ export interface RunnerConfig {
   historyMode: 'push' | 'pull';
   disabledTools: string[];
   blockLocalWebFetch: boolean;
+  speed?: ProviderSpeed;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -43,7 +44,14 @@ export function loadConfig(): RunnerConfig {
     console.error(`[config] Failed to read ${CONFIG_PATH}, using defaults`);
   }
 
-  _config = {
+  _config = runnerConfigFromRaw(raw);
+
+  return _config;
+}
+
+/** Build the runner config from a parsed container.json; missing fields take their defaults. */
+export function runnerConfigFromRaw(raw: Record<string, unknown>): RunnerConfig {
+  return {
     provider: (raw.provider as string) || 'claude',
     assistantName: (raw.assistantName as string) || '',
     groupName: (raw.groupName as string) || '',
@@ -55,9 +63,19 @@ export function loadConfig(): RunnerConfig {
     historyMode: raw.historyMode === 'pull' ? 'pull' : 'push',
     disabledTools: Array.isArray(raw.disabledTools) ? (raw.disabledTools as string[]) : [],
     blockLocalWebFetch: raw.blockLocalWebFetch === true,
+    speed: readSpeed(raw),
   };
+}
 
-  return _config;
+/**
+ * `speed` wins when present; the host already validated it against the
+ * provider's declared tiers, so any non-empty name passes through. A host from
+ * before `speed` existed wrote only `fastMode: true`, so that alone still
+ * means `fast`.
+ */
+function readSpeed(raw: Record<string, unknown>): ProviderSpeed | undefined {
+  if (typeof raw.speed === 'string' && raw.speed !== '') return raw.speed;
+  return raw.fastMode === true ? 'fast' : undefined;
 }
 
 export function setConfigForTest(overrides: Partial<RunnerConfig>): void {

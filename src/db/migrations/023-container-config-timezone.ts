@@ -12,6 +12,7 @@ import type { Migration } from './index.js';
 export const migration023: Migration = {
   version: 23,
   name: 'container-config-timezone',
+  sqliteOnly: true,
   up(db) {
     db.exec(`ALTER TABLE container_configs ADD COLUMN timezone TEXT;`);
   },
