@@ -22,7 +22,10 @@ import path from 'path';
 import { composeGroupProjectDoc, type ProjectDocSpec } from '../project-doc-compose.js';
 import type { AgentGroup } from '../types.js';
 
-export const CODEX_PROJECT_DOC_MAX_BYTES = 32 * 1024;
+// Raised from Codex's 32 KiB default so a long persona does not push capability
+// sections (the ncl guide first) out of AGENTS.md. Keep in sync with the
+// container writer in container/agent-runner/src/providers/codex-app-server.ts.
+export const CODEX_PROJECT_DOC_MAX_BYTES = 48 * 1024;
 
 export const CODEX_PROJECT_DOC_EXTRA_SECTIONS = [
   {

@@ -8,7 +8,7 @@ import type { McpServerConfig } from './types.js';
 // Cap Codex's project-doc loading (AGENTS.md). The host-side composer
 // (src/providers/codex-agents-md.ts) enforces the same cap at compose time —
 // host and container share no modules, so the constant lives in both.
-const CODEX_PROJECT_DOC_MAX_BYTES = 32 * 1024;
+const CODEX_PROJECT_DOC_MAX_BYTES = 48 * 1024;
 
 function log(msg: string): void {
   console.error(`[codex-app-server] ${msg}`);
