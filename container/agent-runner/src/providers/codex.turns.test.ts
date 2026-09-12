@@ -194,6 +194,61 @@ describe('CodexProvider active turns', () => {
     expect(errors).toHaveLength(1);
     expect((errors[0] as { message: string }).message).toContain('app-server exited');
   });
+
+  it('keeps the turn alive through an error Codex will retry, then delivers the result', async () => {
+    const fake = createFakeCodexRuntime();
+    const provider = createCodexProvider({}, fake.runtime);
+    const query = provider.query({ prompt: 'prompt', cwd: '/workspace/agent' });
+    const events: ProviderEvent[] = [];
+
+    const collect = collectEvents(query.events, events);
+    await waitFor(() => fake.startCalls.length === 1);
+
+    fake.notify('error', {
+      error: { message: 'Reconnecting... 2/5', additionalDetails: 'stream disconnected before completion' },
+      willRetry: true,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    });
+    await sleep(30);
+    query.end();
+    fake.completeTurn('recovered answer');
+    await collect;
+
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    expect(events.filter((event) => event.type === 'result')).toEqual([{ type: 'result', text: 'recovered answer' }]);
+    expect(events.some((event) => event.type === 'progress' && event.message.includes('Reconnecting... 2/5'))).toBe(
+      true,
+    );
+  });
+
+  it('fails the turn when Codex gives up retrying', async () => {
+    const fake = createFakeCodexRuntime();
+    const provider = createCodexProvider({}, fake.runtime);
+    const query = provider.query({ prompt: 'prompt', cwd: '/workspace/agent' });
+    const events: ProviderEvent[] = [];
+
+    const collect = collectEvents(query.events, events);
+    await waitFor(() => fake.startCalls.length === 1);
+
+    fake.notify('error', {
+      error: { message: 'Reconnecting... 2/5' },
+      willRetry: true,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    });
+    fake.notify('error', {
+      error: { message: 'stream disconnected' },
+      willRetry: false,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    });
+    await collect.catch(() => {});
+
+    const errors = events.filter((event) => event.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as { message: string }).message).toContain('stream disconnected');
+  });
 });
 
 function createFakeCodexRuntime(opts: { rejectSteer?: boolean } = {}) {
@@ -240,6 +295,7 @@ function createFakeCodexRuntime(opts: { rejectSteer?: boolean } = {}) {
     get killed() {
       return killed;
     },
+    notify,
     completeTurn(text: string) {
       notify('turn/completed', { turn: { items: [{ type: 'agentMessage', text }] } });
     },

@@ -373,6 +373,15 @@ async function* runOneTurn(
       case 'error': {
         const err = params.error as { message?: string; additionalDetails?: string | null } | undefined;
         const msg = [err?.message, err?.additionalDetails].filter(Boolean).join(': ') || 'Codex turn failed';
+        // Codex reports each attempt of its own reconnect loop as an `error`
+        // with willRetry=true ("Reconnecting... 2/5: …"). Ending the turn here
+        // posted the transient error to the chat and discarded the retries;
+        // the turn's real outcome still arrives as turn/completed or a final
+        // error with willRetry=false.
+        if (params.willRetry === true) {
+          buffer.push({ type: 'progress', message: `Codex retrying: ${msg}` });
+          break;
+        }
         state.error = new Error(msg);
         finishTurn();
         break;
