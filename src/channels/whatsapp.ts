@@ -171,6 +171,67 @@ export function buildWhatsAppContactPayload(
 
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 
+// Common GitHub/Slack shortcodes agents reach for that the Chat SDK map lacks.
+const EMOJI_ALIASES: Record<string, string> = {
+  mag: '🔍',
+  mag_right: '🔎',
+  hammer_and_wrench: '🛠️',
+  writing_hand: '✍️',
+  thinking_face: '🤔',
+  spiral_calendar_pad: '🗓️',
+  date: '📅',
+  heavy_check_mark: '✔️',
+  ok: '🆗',
+  saluting_face: '🫡',
+  handshake: '🤝',
+  books: '📚',
+  mailbox: '📫',
+  shopping_cart: '🛒',
+  robot_face: '🤖',
+};
+
+export const SEEN_REACTION = '👀';
+
+/**
+ * Host 👀 bookkeeping, per chat: at most one message carries the host's 👀
+ * (the newest routed one). All reactions come from one WhatsApp account, so a
+ * later agent reaction on the same message replaces the 👀 — only clear a
+ * message whose last reaction from us is still 👀. Methods return the message
+ * id whose 👀 should be removed, if any.
+ */
+export class SeenReactionTracker {
+  private readonly seenByChat = new Map<string, string>();
+  private readonly lastReaction = new Map<string, string>();
+
+  constructor(private readonly max = 1024) {}
+
+  onSeen(chatJid: string, messageId: string): string | undefined {
+    const prev = this.seenByChat.get(chatJid);
+    this.seenByChat.set(chatJid, messageId);
+    this.onReaction(messageId, SEEN_REACTION);
+    return prev && prev !== messageId ? this.takeIfStillSeen(prev) : undefined;
+  }
+
+  onReaction(messageId: string, emoji: string): void {
+    this.lastReaction.delete(messageId);
+    this.lastReaction.set(messageId, emoji);
+    if (this.lastReaction.size > this.max) this.lastReaction.delete(this.lastReaction.keys().next().value!);
+  }
+
+  onReply(chatJid: string): string | undefined {
+    const prev = this.seenByChat.get(chatJid);
+    if (!prev) return undefined;
+    this.seenByChat.delete(chatJid);
+    return this.takeIfStillSeen(prev);
+  }
+
+  private takeIfStillSeen(messageId: string): string | undefined {
+    if (this.lastReaction.get(messageId) !== SEEN_REACTION) return undefined;
+    this.lastReaction.delete(messageId);
+    return messageId;
+  }
+}
+
 /**
  * WhatsApp reactions must be a unicode emoji — Baileys forwards `react.text`
  * verbatim, so a shortcode like `thumbs_up` is silently ignored by clients.
@@ -182,6 +243,7 @@ export function resolveReactionEmoji(input: string): string | undefined {
   if (!trimmed) return undefined;
   if (EMOJI_RE.test(trimmed)) return trimmed;
   const name = trimmed.replace(/^:|:$/g, '');
+  if (EMOJI_ALIASES[name]) return EMOJI_ALIASES[name];
   const resolved = defaultEmojiResolver.toGChat(defaultEmojiResolver.fromSlack(name));
   return EMOJI_RE.test(resolved) ? resolved : undefined;
 }
@@ -665,6 +727,19 @@ registerChannelAdapter('whatsapp', {
     // Inbound message keys (id → key) so reactions can target the original
     // author in groups. In-memory only; bounded FIFO.
     const inboundKeyCache = new Map<string, WAMessageKey>();
+
+    // Host 👀 on the newest routed message per chat (see SeenReactionTracker).
+    const seenReactions = new SeenReactionTracker();
+    const clearSeenReaction = async (chatJid: string, messageId: string): Promise<void> => {
+      try {
+        await sock.sendMessage(
+          chatJid,
+          buildWhatsAppReactionPayload(chatJid, messageId, '', inboundKeyCache.get(messageId)),
+        );
+      } catch (err) {
+        log.warn('Failed to clear seen reaction', { chatJid, messageId, err });
+      }
+    };
 
     // Poll vote accumulation: pollMsgId -> (voterJid -> latest decrypted update).
     // WhatsApp sends each voter's full current selection per change, so we keep
@@ -1536,6 +1611,12 @@ registerChannelAdapter('whatsapp', {
             return;
           }
           const messageId = content.messageId as string;
+          if (content.seen === true) {
+            const previous = seenReactions.onSeen(platformId, messageId);
+            if (previous) await clearSeenReaction(platformId, previous);
+          } else {
+            seenReactions.onReaction(messageId, emoji);
+          }
           try {
             await sock.sendMessage(
               platformId,
@@ -1606,6 +1687,10 @@ registerChannelAdapter('whatsapp', {
         const hasFiles = message.files && message.files.length > 0;
 
         if (!text && !hasFiles) return;
+
+        // A reply is going out — the host 👀 ("seen, working") is done.
+        const seenMessage = seenReactions.onReply(platformId);
+        if (seenMessage) await clearSeenReaction(platformId, seenMessage);
 
         // Send file attachments (first file gets the caption, rest are captionless)
         if (hasFiles) {

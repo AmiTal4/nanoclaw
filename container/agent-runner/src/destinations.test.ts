@@ -104,6 +104,8 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('react first, then work');
     expect(prompt).toContain('`whatsapp-dm`');
     expect(prompt).toContain('On WhatsApp destinations, acknowledge with a reaction instead');
+    expect(prompt).toContain('the emoji character itself');
+    expect(prompt).toContain('never react 👀 yourself');
   });
 
   it('omits reaction guidance for non-WhatsApp agents', () => {

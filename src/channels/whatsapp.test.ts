@@ -29,7 +29,10 @@ import {
   buildWhatsAppReactionPayload,
   decryptPollVoteWithJidCandidates,
   resolveReactionEmoji,
+  SeenReactionTracker,
 } from './whatsapp.js';
+
+const CHAT_FOR_REMOVE = '15551234567@s.whatsapp.net';
 
 const BOT_PHONE_JID = '15550009999@s.whatsapp.net';
 const BOT_LID_USER = '987654321';
@@ -306,6 +309,14 @@ describe('WhatsApp reactions', () => {
     expect(resolveReactionEmoji(':calendar:')).toBe('📅');
   });
 
+  it('resolves common shortcodes missing from the Chat SDK map', () => {
+    expect(resolveReactionEmoji('mag')).toBe('🔍');
+    expect(resolveReactionEmoji('mag_right')).toBe('🔎');
+    expect(resolveReactionEmoji('hammer_and_wrench')).toBe('🛠️');
+    expect(resolveReactionEmoji('writing_hand')).toBe('✍️');
+    expect(resolveReactionEmoji('thinking_face')).toBe('🤔');
+  });
+
   it('rejects names that do not resolve to an emoji', () => {
     expect(resolveReactionEmoji('nonsense_xyz')).toBeUndefined();
     expect(resolveReactionEmoji('')).toBeUndefined();
@@ -328,6 +339,49 @@ describe('WhatsApp reactions', () => {
         },
       },
     });
+  });
+
+  describe('SeenReactionTracker (host 👀)', () => {
+    const CHAT = '15551234567@s.whatsapp.net';
+
+    it('moves 👀 to the newest message and clears the previous one', () => {
+      const t = new SeenReactionTracker();
+      expect(t.onSeen(CHAT, 'M1')).toBeUndefined();
+      expect(t.onSeen(CHAT, 'M2')).toBe('M1');
+    });
+
+    it("never clears a message whose 👀 was replaced by the agent's reaction", () => {
+      const t = new SeenReactionTracker();
+      t.onSeen(CHAT, 'M1');
+      t.onReaction('M1', '🔍');
+      expect(t.onSeen(CHAT, 'M2')).toBeUndefined();
+    });
+
+    it('clears 👀 once when a reply is delivered to the chat', () => {
+      const t = new SeenReactionTracker();
+      t.onSeen(CHAT, 'M1');
+      expect(t.onReply(CHAT)).toBe('M1');
+      expect(t.onReply(CHAT)).toBeUndefined();
+    });
+
+    it('does not clear on reply after the agent reacted', () => {
+      const t = new SeenReactionTracker();
+      t.onSeen(CHAT, 'M1');
+      t.onReaction('M1', '👍');
+      expect(t.onReply(CHAT)).toBeUndefined();
+    });
+
+    it('keeps chats independent and ignores re-seeing the same message', () => {
+      const t = new SeenReactionTracker();
+      t.onSeen(CHAT, 'M1');
+      expect(t.onSeen('120363000000000000@g.us', 'G1')).toBeUndefined();
+      expect(t.onSeen(CHAT, 'M1')).toBeUndefined();
+      expect(t.onReply(CHAT)).toBe('M1');
+    });
+  });
+
+  it('builds an empty-text payload to remove a reaction', () => {
+    expect(buildWhatsAppReactionPayload(CHAT_FOR_REMOVE, 'M1', '').react.text).toBe('');
   });
 
   it('falls back to a bare key when the inbound message is unknown', () => {

@@ -28,6 +28,7 @@ import {
   getMessagingGroupWithAgentCount,
 } from './db/messaging-groups.js';
 import { findSessionForAgent } from './db/sessions.js';
+import { getDeliveryAdapter } from './delivery.js';
 import { backfillNewSession, fanInboundMessage } from './modules/cross-session-context/index.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
@@ -654,6 +655,13 @@ async function deliverToAgent(
       effectiveThreadId,
       mg.instance,
     );
+    const seen = seenReactionContent(event.channelType, event.message.id);
+    const seenAdapter = getDeliveryAdapter();
+    if (seen && seenAdapter) {
+      seenAdapter
+        .deliver(event.channelType, event.platformId, effectiveThreadId, 'chat', seen, undefined, mg.instance)
+        .catch((err) => log.warn('Seen reaction failed', { platformId: event.platformId, err }));
+    }
     const freshSession = await getSession(session.id);
     if (freshSession) {
       const woke = await requestWake(freshSession, 'inbound-message');
@@ -663,6 +671,17 @@ async function deliverToAgent(
       if (!woke) stopTypingRefresh(freshSession.id);
     }
   }
+}
+
+/**
+ * Host "seen" signal: a 👀 reaction on the routed message, so the sender knows
+ * an agent picked it up before the container is even awake. WhatsApp only —
+ * the adapter keeps 👀 on the newest message per chat and clears it when the
+ * reply is delivered (see SeenReactionTracker).
+ */
+export function seenReactionContent(channelType: string, platformMessageId: string | undefined): string | null {
+  if (channelType !== 'whatsapp' || !platformMessageId) return null;
+  return JSON.stringify({ operation: 'reaction', messageId: platformMessageId, emoji: '👀', seen: true });
 }
 
 /**

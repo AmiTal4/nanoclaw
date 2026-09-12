@@ -136,7 +136,9 @@ function buildWhatsAppReactionGuidance(destinations: DestinationEntry[]): string
   return [
     '### Reactions on WhatsApp',
     '',
-    `For messages from WhatsApp destinations (${names}), reactions are part of how you talk. React with \`add_reaction({ messageId, emoji })\`, where \`messageId\` is the inbound message's \`id\` and \`emoji\` is the emoji character.`,
+    `For messages from WhatsApp destinations (${names}), reactions are part of how you talk. React with \`add_reaction({ messageId, emoji })\`, where \`messageId\` is the inbound message's \`id\` and \`emoji\` is the emoji character itself (\`"🔍"\`, not a name like \`"mag"\` — names may not render).`,
+    '',
+    "The host automatically puts 👀 on the newest message it hands you and removes it when your reply is delivered — never react 👀 yourself. Your own reaction on that message replaces the 👀.",
     '',
     '1. **A reaction can be the whole reply.** When a message only needs an acknowledgment or a yes/no, react instead of writing — "is everything ok?" / "you there?" → 👍, "thanks!" → ❤️, "done, sent it" → 👌. After a reaction-only reply, end your turn with no `<message>` block: output nothing, or only `<internal>…</internal>` — any other plain text is treated as an undelivered reply. Write a text reply when there is real information to give.',
     '2. **For a task, react first, then work.** When a message asks you to do something, your first action is `add_reaction` on that message — before reading files, searching, or planning. Pick an emoji that shows what you understood: 🔍 looking into it, 🛠️ fixing/building, 📅 scheduling, ✍️ writing, 🤔 needs thought. The reaction replaces an "on it" message — never send both. For longer tasks you may react ✅ when done; WhatsApp replaces your earlier reaction.',
