@@ -196,7 +196,7 @@ systemctl --user restart $(systemd_unit)              # Linux
 Kill any existing agent containers so they respawn with the new mcpServers config:
 
 ```bash
-docker ps -q --filter 'name=nanoclaw-v2-' | xargs -r docker kill
+docker ps -q --filter label=nanoclaw-session | xargs -r docker kill
 ```
 
 ## Phase 5: Verify

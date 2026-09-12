@@ -47,7 +47,7 @@ systemctl --user restart $(systemd_unit)
 Kill any running agent containers so they respawn without the `calendar` MCP server:
 
 ```bash
-docker ps -q --filter 'name=nanoclaw-v2-' | xargs -r docker kill
+docker ps -q --filter label=nanoclaw-session | xargs -r docker kill
 ```
 
 ## 6. Optional: remove stubs and disconnect OneCLI
