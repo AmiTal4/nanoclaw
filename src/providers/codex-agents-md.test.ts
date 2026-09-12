@@ -19,6 +19,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { composeGroupAgentsMd, CODEX_PROJECT_DOC_MAX_BYTES } from './codex-agents-md.js';
 import { closeDb, createAgentGroup, initTestDb, runMigrations } from '../db/index.js';
 import { ensureContainerConfig, updateContainerConfigJson } from '../db/container-configs.js';
+import { PERSONA_PREPEND_FILE } from '../group-persona.js';
 import type { AgentGroup } from '../types.js';
 
 const TEST_ROOT = '/tmp/nanoclaw-agents-md-test';
