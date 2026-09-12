@@ -84,10 +84,21 @@ function readImports(file: string): string[] {
   return names;
 }
 
+/**
+ * A barrel import is an installed SKILL only if a skill by that name exists.
+ * A skill may append helper modules of its own to the same barrel — /add-slack
+ * appends `slack-a2a-guard`, which has no `add-slack-a2a-guard` skill — and
+ * treating one of those as an uninstallable skill failed the whole refresh.
+ */
+function hasSkill(root: string, skillName: string): boolean {
+  return fs.existsSync(path.join(root, '.claude', 'skills', skillName, 'SKILL.md'));
+}
+
 export function detectInstalledSkills(root: string): InstalledSkill[] {
   const channels = readImports(path.join(root, 'src/channels/index.ts'))
     .filter((name) => name !== 'cli')
-    .map((name) => ({ name, skillName: `add-${name}`, kind: 'channel' as const }));
+    .map((name) => ({ name, skillName: `add-${name}`, kind: 'channel' as const }))
+    .filter((skill) => hasSkill(root, skill.skillName));
   const providers = new Set([
     ...readImports(path.join(root, 'src/providers/index.ts')),
     ...readImports(path.join(root, 'container/agent-runner/src/providers/index.ts')),
@@ -96,11 +107,14 @@ export function detectInstalledSkills(root: string): InstalledSkill[] {
 
   return [
     ...channels,
-    ...[...providers].sort().map((name) => ({
-      name,
-      skillName: `add-${name}`,
-      kind: 'provider' as const,
-    })),
+    ...[...providers]
+      .sort()
+      .map((name) => ({
+        name,
+        skillName: `add-${name}`,
+        kind: 'provider' as const,
+      }))
+      .filter((skill) => hasSkill(root, skill.skillName)),
   ].sort((a, b) => a.skillName.localeCompare(b.skillName));
 }
 
