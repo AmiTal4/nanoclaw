@@ -43,6 +43,7 @@ import {
 } from '@whiskeysockets/baileys';
 import type { EventMessageOptions, GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 import { storeTcTokensFromIqResult } from '@whiskeysockets/baileys/lib/Utils/tc-token-utils.js';
+import { defaultEmojiResolver } from 'chat';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
 import { readEnvFile } from '../env.js';
@@ -131,6 +132,7 @@ const AUTH_DIR = path.join(process.cwd(), 'store', 'auth');
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 const GROUP_METADATA_CACHE_TTL_MS = 60_000; // 1 min for outbound sends
 const SENT_MESSAGE_CACHE_MAX = 256;
+const INBOUND_KEY_CACHE_MAX = 1024;
 const RECONNECT_DELAY_MS = 5000;
 const PENDING_QUESTIONS_MAX = 64;
 
@@ -165,6 +167,41 @@ export function buildWhatsAppContactPayload(
   displayName = 'Contact',
 ): { contacts: { displayName: string; contacts: Array<{ displayName: string; vcard: string }> } } {
   return { contacts: { displayName, contacts: [{ displayName, vcard }] } };
+}
+
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+
+/**
+ * WhatsApp reactions must be a unicode emoji — Baileys forwards `react.text`
+ * verbatim, so a shortcode like `thumbs_up` is silently ignored by clients.
+ * Accepts raw emoji or normalized/Slack shortcode names (via the Chat SDK
+ * emoji map); returns undefined when the input can't become an emoji.
+ */
+export function resolveReactionEmoji(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  if (EMOJI_RE.test(trimmed)) return trimmed;
+  const name = trimmed.replace(/^:|:$/g, '');
+  const resolved = defaultEmojiResolver.toGChat(defaultEmojiResolver.fromSlack(name));
+  return EMOJI_RE.test(resolved) ? resolved : undefined;
+}
+
+/**
+ * Reaction payload. In groups the key must carry the original author
+ * (`participant`), so prefer the key recorded when the message arrived;
+ * fall back to a bare key for messages not seen since the last restart.
+ */
+export function buildWhatsAppReactionPayload(
+  platformId: string,
+  messageId: string,
+  emoji: string,
+  inboundKey?: Pick<WAMessageKey, 'remoteJid' | 'fromMe' | 'participant'>,
+): { react: { text: string; key: WAMessageKey } } {
+  const key: WAMessageKey = inboundKey
+    ? { remoteJid: inboundKey.remoteJid || platformId, id: messageId, fromMe: inboundKey.fromMe || false }
+    : { remoteJid: platformId, id: messageId, fromMe: false };
+  if (inboundKey?.participant) key.participant = inboundKey.participant;
+  return { react: { text: emoji, key } };
 }
 
 export function decryptPollVoteWithJidCandidates<T = ReturnType<typeof decryptPollVote>>(args: {
@@ -624,6 +661,10 @@ registerChannelAdapter('whatsapp', {
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
+
+    // Inbound message keys (id → key) so reactions can target the original
+    // author in groups. In-memory only; bounded FIFO.
+    const inboundKeyCache = new Map<string, WAMessageKey>();
 
     // Poll vote accumulation: pollMsgId -> (voterJid -> latest decrypted update).
     // WhatsApp sends each voter's full current selection per change, so we keep
@@ -1280,6 +1321,13 @@ registerChannelAdapter('whatsapp', {
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
 
+            if (msg.key.id) {
+              inboundKeyCache.set(msg.key.id, msg.key);
+              if (inboundKeyCache.size > INBOUND_KEY_CACHE_MAX) {
+                inboundKeyCache.delete(inboundKeyCache.keys().next().value!);
+              }
+            }
+
             // Resolve sender: in groups, participant may be LID — use participantAlt
             const rawSender = msg.key.participant || msg.key.remoteJid || '';
             const sender = rawSender.endsWith('@lid')
@@ -1482,15 +1530,19 @@ registerChannelAdapter('whatsapp', {
 
         // Reaction → emoji on a message
         if (content.operation === 'reaction' && content.messageId && content.emoji) {
+          const emoji = resolveReactionEmoji(content.emoji as string);
+          if (!emoji) {
+            log.warn('Reaction emoji is not a valid emoji — skipping', { platformId, emoji: content.emoji });
+            return;
+          }
+          const messageId = content.messageId as string;
           try {
-            await sock.sendMessage(platformId, {
-              react: {
-                text: content.emoji as string,
-                key: { remoteJid: platformId, id: content.messageId as string, fromMe: false },
-              },
-            });
+            await sock.sendMessage(
+              platformId,
+              buildWhatsAppReactionPayload(platformId, messageId, emoji, inboundKeyCache.get(messageId)),
+            );
           } catch (err) {
-            log.debug('Failed to send reaction', { platformId, err });
+            log.warn('Failed to send reaction', { platformId, err });
           }
           return;
         }

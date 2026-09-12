@@ -118,14 +118,29 @@ function buildDestinationsSection(mode: SessionMode): string {
     'When replying to an incoming message, default to addressing the destination it came `from` (every inbound `<message>` tag carries a `from="name"` attribute). Pick a different destination when the request asks for it (e.g., "tell Laura that…").',
   );
   lines.push('');
+  const whatsapp = all.filter((d) => d.channelType === 'whatsapp');
   lines.push(
-    'The `send_message` MCP tool is the same delivery, available mid-turn — handy for a quick acknowledgment ("on it") before a slow tool call. Always pass its explicit `to` destination. Each `send_message` call and each final-response `<message>` block lands as its own message in the conversation, so they read as a sequence rather than as one combined reply.',
+    'The `send_message` MCP tool is the same delivery, available mid-turn — handy for a quick acknowledgment ("on it") before a slow tool call. Always pass its explicit `to` destination. Each `send_message` call and each final-response `<message>` block lands as its own message in the conversation, so they read as a sequence rather than as one combined reply.' +
+      (whatsapp.length > 0 ? ' On WhatsApp destinations, acknowledge with a reaction instead (see below).' : ''),
   );
   lines.push('');
   lines.push(
     'For a short turn, do not narrate. For longer work, send one acknowledgment and then updates only at meaningful milestones, especially before slow operations. Never narrate micro-steps; finish with the outcome, not a play-by-play.',
   );
+  if (whatsapp.length > 0) lines.push('', buildWhatsAppReactionGuidance(whatsapp));
   return lines.join('\n');
+}
+
+function buildWhatsAppReactionGuidance(destinations: DestinationEntry[]): string {
+  const names = destinations.map((d) => `\`${d.name}\``).join(', ');
+  return [
+    '### Reactions on WhatsApp',
+    '',
+    `For messages from WhatsApp destinations (${names}), reactions are part of how you talk. React with \`add_reaction({ messageId, emoji })\`, where \`messageId\` is the inbound message's \`id\` and \`emoji\` is the emoji character.`,
+    '',
+    '1. **A reaction can be the whole reply.** When a message only needs an acknowledgment or a yes/no, react instead of writing — "is everything ok?" / "you there?" → 👍, "thanks!" → ❤️, "done, sent it" → 👌. After a reaction-only reply, end your turn with no `<message>` block: output nothing, or only `<internal>…</internal>` — any other plain text is treated as an undelivered reply. Write a text reply when there is real information to give.',
+    '2. **For a task, react first, then work.** When a message asks you to do something, your first action is `add_reaction` on that message — before reading files, searching, or planning. Pick an emoji that shows what you understood: 🔍 looking into it, 🛠️ fixing/building, 📅 scheduling, ✍️ writing, 🤔 needs thought. The reaction replaces an "on it" message — never send both. For longer tasks you may react ✅ when done; WhatsApp replaces your earlier reaction.',
+  ].join('\n');
 }
 
 function destinationLabel(d: DestinationEntry): string {

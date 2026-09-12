@@ -26,7 +26,9 @@ import {
   buildWhatsAppPollPayload,
   buildWhatsAppEventPayload,
   buildWhatsAppContactPayload,
+  buildWhatsAppReactionPayload,
   decryptPollVoteWithJidCandidates,
+  resolveReactionEmoji,
 } from './whatsapp.js';
 
 const BOT_PHONE_JID = '15550009999@s.whatsapp.net';
@@ -287,6 +289,50 @@ describe('native WhatsApp outbound payloads', () => {
         displayName: 'Contact',
         contacts: [{ displayName: 'Contact', vcard }],
       },
+    });
+  });
+});
+
+describe('WhatsApp reactions', () => {
+  it('passes raw unicode emoji through unchanged', () => {
+    expect(resolveReactionEmoji('🔍')).toBe('🔍');
+    expect(resolveReactionEmoji('🛠️')).toBe('🛠️');
+  });
+
+  it('resolves normalized and Slack-style shortcode names to unicode', () => {
+    expect(resolveReactionEmoji('thumbs_up')).toBe('👍');
+    expect(resolveReactionEmoji('eyes')).toBe('👀');
+    expect(resolveReactionEmoji('white_check_mark')).toBe('✅');
+    expect(resolveReactionEmoji(':calendar:')).toBe('📅');
+  });
+
+  it('rejects names that do not resolve to an emoji', () => {
+    expect(resolveReactionEmoji('nonsense_xyz')).toBeUndefined();
+    expect(resolveReactionEmoji('')).toBeUndefined();
+  });
+
+  it('targets the original inbound key when known (group participant)', () => {
+    const payload = buildWhatsAppReactionPayload('120363000000000000@g.us', 'MSG1', '👍', {
+      remoteJid: '120363000000000000@g.us',
+      fromMe: false,
+      participant: '222222222222222@lid',
+    });
+    expect(payload).toEqual({
+      react: {
+        text: '👍',
+        key: {
+          remoteJid: '120363000000000000@g.us',
+          id: 'MSG1',
+          fromMe: false,
+          participant: '222222222222222@lid',
+        },
+      },
+    });
+  });
+
+  it('falls back to a bare key when the inbound message is unknown', () => {
+    expect(buildWhatsAppReactionPayload('15551234567@s.whatsapp.net', 'MSG2', '✅')).toEqual({
+      react: { text: '✅', key: { remoteJid: '15551234567@s.whatsapp.net', id: 'MSG2', fromMe: false } },
     });
   });
 });

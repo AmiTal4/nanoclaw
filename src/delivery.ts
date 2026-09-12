@@ -523,7 +523,7 @@ async function deliverMessage(
     msg.platformId,
     msg.threadId,
     msg.kind,
-    msg.content,
+    toPlatformMessageContent(msg.content, session.agent_group_id),
     files,
     deliverInstance,
   );
@@ -575,6 +575,31 @@ export interface PostDeliveryInfo {
 export type PostDeliveryHook = (msg: OutboundMessage, session: Session, info: PostDeliveryInfo) => void | Promise<void>;
 
 const postDeliveryHooks: PostDeliveryHook[] = [];
+
+/**
+ * The router stores inbound ids as `<platform id>:<agent_group_id>` so fan-out
+ * copies stay unique (router.ts messageIdForAgent). Reactions and edits that
+ * target an inbound message carry that scoped id back out; adapters need the
+ * bare platform id, or the platform reports message_not_found (Slack) or
+ * silently ignores it (WhatsApp). Only this session's exact suffix is removed.
+ */
+export function toPlatformMessageContent(rawContent: string, agentGroupId: string): string {
+  let content: Record<string, unknown>;
+  try {
+    content = JSON.parse(rawContent);
+  } catch {
+    return rawContent;
+  }
+  const suffix = `:${agentGroupId}`;
+  if (
+    (content.operation !== 'reaction' && content.operation !== 'edit') ||
+    typeof content.messageId !== 'string' ||
+    !content.messageId.endsWith(suffix)
+  ) {
+    return rawContent;
+  }
+  return JSON.stringify({ ...content, messageId: content.messageId.slice(0, -suffix.length) });
+}
 
 export function registerPostDeliveryHook(hook: PostDeliveryHook): void {
   postDeliveryHooks.push(hook);

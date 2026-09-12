@@ -94,6 +94,35 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).not.toContain('default to `parent`');
   });
 
+  it('adds WhatsApp reaction guidance when a WhatsApp destination exists', () => {
+    seedDestination('whatsapp-dm', 'whatsapp-dm', 'whatsapp', 'phone-2@s.whatsapp.net');
+
+    const prompt = buildSystemPromptAddendum('Casa');
+
+    expect(prompt).toContain('### Reactions on WhatsApp');
+    expect(prompt).toContain('A reaction can be the whole reply');
+    expect(prompt).toContain('react first, then work');
+    expect(prompt).toContain('`whatsapp-dm`');
+    expect(prompt).toContain('On WhatsApp destinations, acknowledge with a reaction instead');
+  });
+
+  it('omits reaction guidance for non-WhatsApp agents', () => {
+    seedDestination('dev-channel', '#dev', 'slack', 'slack:C1');
+
+    const prompt = buildSystemPromptAddendum('Casa');
+
+    expect(prompt).not.toContain('Reactions on WhatsApp');
+    expect(prompt).not.toContain('acknowledge with a reaction');
+  });
+
+  it('omits reaction guidance in task runs', () => {
+    seedDestination('whatsapp-dm', 'whatsapp-dm', 'whatsapp', 'phone-2@s.whatsapp.net');
+
+    const prompt = buildSystemPromptAddendum('Casa', { kind: 'task', taskId: 't1' });
+
+    expect(prompt).not.toContain('Reactions on WhatsApp');
+  });
+
   it('keeps generic task guidance when no channel destination exists', () => {
     getInboundDb()
       .prepare(
